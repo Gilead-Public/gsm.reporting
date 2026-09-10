@@ -52,7 +52,7 @@ lData <- list(
 ## Data with missing values (15% NA's)
 
 ## specify domains
-domains <- c(gsub("Raw_", "", names(lData)), "COUNTRY", "EXCLUSION")
+domains <- c(gsub("Raw_", "", names(lData)), "COUNTRY", "EXCLUSION", "IPNS")
 
 ## Get Mapped data
 mappings_wf <- workr::MakeWorkflowList(
