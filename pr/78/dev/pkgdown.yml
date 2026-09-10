@@ -3,7 +3,7 @@ pkgdown: 2.2.1
 pkgdown_sha: ~
 articles:
   DataReporting: DataReporting.html
-last_built: 2026-09-04T08:40Z
+last_built: 2026-09-10T12:28Z
 urls:
   reference: https://gilead-public.github.io/gsm.reporting/reference
   article: https://gilead-public.github.io/gsm.reporting/articles

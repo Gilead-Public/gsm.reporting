@@ -69,9 +69,6 @@ used in the reporting workflow:
 
 ``` r
 
-# IPNS is a derived mapping (runs over Mapped_SUBJ, not a Raw_* domain), so it
-# must be named explicitly here; Step 2 below runs every kri* metric, including
-# kri0019 which requires Mapped_IPNS.
 core_mappings <- c("AE", "COUNTRY", "DATACHG", "DATAENT", "ENROLL", "LB", "PK", "VISIT", "Death", "OverallResponse", "Randomization",
                    "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ", "IE", "EXCLUSION", "IPNS")
 
