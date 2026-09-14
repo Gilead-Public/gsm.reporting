@@ -70,7 +70,7 @@ used in the reporting workflow:
 ``` r
 
 core_mappings <- c("AE", "COUNTRY", "DATACHG", "DATAENT", "ENROLL", "LB", "PK", "VISIT", "Death", "OverallResponse", "Randomization",
-                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ", "IE", "EXCLUSION")
+                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ", "IE", "EXCLUSION", "IPNS")
 
 lSource <- gsm.core::lSource
 
@@ -87,9 +87,13 @@ mapped <- workr::RunWorkflows(mappings_wf, lRaw)
 # Step 2 - Create Metrics - calculate metrics using mapped data
 metrics_wf <- workr::MakeWorkflowList(strPath = "workflow/2_metrics", strNames = "kri", strPackage = "gsm.kri")
 lAnalysis <- workr::RunWorkflows(metrics_wf, mapped)
+#> Warning: 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
+#> 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
+#> 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
+#> 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
 #> Warning: 7 values of [ GroupID ] with a [ Denominator ] value of 0
 #> removed.
-#> Warning: 9 values of [ GroupID ] with a [ Denominator ] value of 0
+#> Warning: 13 values of [ GroupID ] with a [ Denominator ] value of 0
 #> removed.
 ```
 
@@ -255,32 +259,34 @@ dfBounds <- gsm.reporting::MakeBounds(dfResults = dfResults,
                                       dfMetrics = dfMetrics)
 #> Creating stacked dfBounds data for strMetrics
 #> Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-#> nStep was not provided. Setting default step to 2.944.
+#> nStep was not provided. Setting default step to 2.82.
 #> Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-#> nStep was not provided. Setting default step to 2.944.
+#> nStep was not provided. Setting default step to 2.82.
 #> Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-#> nStep was not provided. Setting default step to 2.944.
+#> nStep was not provided. Setting default step to 2.82.
 #> Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-#> nStep was not provided. Setting default step to 2.944.
+#> nStep was not provided. Setting default step to 2.82.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 16.116.
+#> nStep was not provided. Setting default step to 15.812.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 0.064.
+#> nStep was not provided. Setting default step to 0.056.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 0.064.
+#> nStep was not provided. Setting default step to 0.056.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 31.744.
+#> nStep was not provided. Setting default step to 28.672.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 1.984.
+#> nStep was not provided. Setting default step to 1.792.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 7.936.
+#> nStep was not provided. Setting default step to 7.168.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 31.744.
+#> nStep was not provided. Setting default step to 28.672.
 #> Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-#> nStep was not provided. Setting default step to 0.076.
+#> nStep was not provided. Setting default step to 0.068.
 #> Parsed 0.9,0.85 to numeric vector: 0.9, 0.85
 #> Parsed 1.5,2.5 to numeric vector: 1.5, 2.5
 #> Parsed 1,2 to numeric vector: 1, 2
+#> Parsed 2,3 to numeric vector: 2, 3
+#> nStep was not provided. Setting default step to 0.056.
 ```
 
 The resulting `dfBounds` data frame contains the following columns:
@@ -454,36 +460,36 @@ lReports <- workr::RunWorkflows(module_wf, reporting)
 
 #### Visualization Functions
 
-- [`gsm.kri::Visualize_Scatter()`](https://gilead-biostats.github.io/gsm.kri/reference/Visualize_Scatter.html):
+- [`gsm.kri::Visualize_Scatter()`](https://gilead-public.github.io/gsm.kri/reference/Visualize_Scatter.html):
   Creates scatter plot of Total Exposure (in days, on log scale) vs
   Total Number of Event(s) of Interest (on linear scale). Each data
   point represents one site. Outliers are plotted in red with the site
   label attached. This plot is only created when statistical method is
   **not** defined as `identity`. Chart is called `scatter` in the
   `lCharts` object.
-- [`gsm.kri::Visualize_Score()`](https://gilead-biostats.github.io/gsm.kri/reference/Visualize_Score.html):
+- [`gsm.kri::Visualize_Score()`](https://gilead-public.github.io/gsm.kri/reference/Visualize_Score.html):
   Provides a standard visualization for Score or KRI. Charts are called
   `barScore` or `barMetric` in the `lCharts` object.
-- [`gsm.kri::Visualize_Metric()`](https://gilead-biostats.github.io/gsm.kri/reference/Visualize_Metric.html):
+- [`gsm.kri::Visualize_Metric()`](https://gilead-public.github.io/gsm.kri/reference/Visualize_Metric.html):
   Creates all available charts and tables for a metric using the data
   provided.
 
 #### Widget Functions
 
-- [`gsm.kri::Widget_GroupOverview()`](https://gilead-biostats.github.io/gsm.kri/reference/Widget_GroupOverview.html):
+- [`gsm.kri::Widget_GroupOverview()`](https://gilead-public.github.io/gsm.vizr/reference/Widget_GroupOverview.html):
   Creates an interactive table displaying the flag distribution for all
   groups across all metrics.
-- [`gsm.kri::Widget_BarChart()`](https://gilead-biostats.github.io/gsm.kri/reference/Widget_BarChart.html):
+- [`gsm.kri::Widget_BarChart()`](https://gilead-public.github.io/gsm.vizr/reference/Widget_BarChart.html):
   Creates an interactive bar chart visualization for Score or KRI.
   Charts are called `barScoreJS` or `barMetricJS` in the `lCharts`
   object.
-- [`gsm.kri::Widget_ScatterPlot()`](https://gilead-biostats.github.io/gsm.kri/reference/Widget_ScatterPlot.html):
+- [`gsm.kri::Widget_ScatterPlot()`](https://gilead-public.github.io/gsm.vizr/reference/Widget_ScatterPlot.html):
   Creates an interactive scatter plot of Total Exposure (in days, on log
   scale) vs Total Number of Event(s) of Interest (on linear scale). Each
   data point represents one site. Outliers are plotted in red with the
   site label attached.Chart is called `scatterJS` in the `lCharts`
   object.
-- [`gsm.kri::Widget_TimeSeries()`](https://gilead-biostats.github.io/gsm.kri/reference/Widget_TimeSeries.html):
+- [`gsm.kri::Widget_TimeSeries()`](https://gilead-public.github.io/gsm.vizr/reference/Widget_TimeSeries.html):
   Creates an interactive time series scatter plot of the score, metric
   or numerator. Charts are called `timeSeriesContinuousScoreJS`,
   `timeSeriesContinuousMetricJS`, or `timeSeriesContinuousNumeratorJS`
@@ -491,6 +497,6 @@ lReports <- workr::RunWorkflows(module_wf, reporting)
 
 #### Table Functions
 
-- [`gsm.kri::Report_MetricTable()`](https://gilead-biostats.github.io/gsm.kri/reference/Report_MetricTable.html):
+- [`gsm.kri::Report_MetricTable()`](https://gilead-public.github.io/gsm.kri/reference/Report_MetricTable.html):
   Creates a sortable table displaying the flags per group (e.g. Site,
   Country) for one metric at a time.

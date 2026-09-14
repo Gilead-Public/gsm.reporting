@@ -12,8 +12,13 @@ HTMLWidgets.widget({
                     input.lChartConfig = {};
                 };
 
-                // Assign a unique ID to the element.
-                el.id = `scatterPlot--${input.lChartConfig.MetricID}`;
+                // Readable data-derived id for report-level wiring - but never
+                // rename a Shiny output (the outputId is what the server keys
+                // on), and keep the htmlwidgets id as a suffix so repeated
+                // metrics on one page stay unique.
+                if (!HTMLWidgets.shinyMode) {
+                    el.id = `scatterPlot--${input.lChartConfig.MetricID}--${el.id}`;
+                }
 
                 // Add click event callback to chart.
                 input.lChartConfig.clickCallback = clickCallback(el, input);
