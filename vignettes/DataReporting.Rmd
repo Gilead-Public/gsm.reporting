@@ -69,7 +69,7 @@ To run the analysis workflow on all 13 KRIs using `clindata` Raw+ data, use the 
 
 ```{r include = TRUE, message = FALSE}
 core_mappings <- c("AE", "COUNTRY", "DATACHG", "DATAENT", "ENROLL", "LB", "PK", "VISIT", "Death", "OverallResponse", "Randomization",
-                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ", "IE", "EXCLUSION")
+                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ", "IE", "EXCLUSION", "IPNS")
 
 lSource <- gsm.core::lSource
 
