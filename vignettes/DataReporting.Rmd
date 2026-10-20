@@ -68,15 +68,12 @@ To run the analysis workflow on all 13 KRIs using `clindata` Raw+ data, use the 
 3. `mapped$Mapped_SUBJ` - mapped data.frame of enrolled participants
 
 ```{r include = TRUE, message = FALSE}
-core_mappings <- c("AE", "COUNTRY", "DATACHG", "DATAENT", "ENROLL", "LB", "PK", "VISIT", "Death", "OverallResponse", "Randomization",
-                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ", "IE", "EXCLUSION", "IPNS")
-
 lSource <- gsm.core::lSource
 
 # Step 0 - Data Ingestion - standardize tables/columns names
-mappings_wf <- workr::MakeWorkflowList(strPath = "workflow/1_mappings", 
-                                       strNames = core_mappings,
-                                       strPackage = "gsm.mapping")
+mappings_wf <- workr::MakeWorkflowList(strPath = "workflow/1_mappings", strPackage = "gsm.mapping")
+# These domains are not present in gsm.core::lSource
+mappings_wf <- mappings_wf[setdiff(names(mappings_wf), c("AntiCancer", "Baseline", "Consents"))]
 mappings_spec <- CombineSpecs(mappings_wf)
 lRaw <- Ingest(lSource, mappings_spec)
 
@@ -298,13 +295,12 @@ Here, you will see how to run your workflows. The general approach is to run the
 ```{r eval = FALSE, include = TRUE}
 # Step 1 - Create Mapped Data - filter/map raw data
 # Source Data
-core_mappings <- c("AE", "COUNTRY", "DATACHG", "DATAENT", "ENROLL", "LB", "PK", "VISIT",
-                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ")
-
 lSource <- gsm.core::lSource
 
 # Step 0 - Data Ingestion - standardize tables/columns names
-mappings_wf <- workr::MakeWorkflowList(strNames = core_mappings, strPath = "workflow/1_mappings", strPackage = "gsm.mapping")
+mappings_wf <- workr::MakeWorkflowList(strPath = "workflow/1_mappings", strPackage = "gsm.mapping")
+# These domains are not present in gsm.core::lSource
+mappings_wf <- mappings_wf[setdiff(names(mappings_wf), c("AntiCancer", "Baseline", "Consents"))]
 mappings_spec <- gsm.mapping::CombineSpecs(mappings_wf)
 lRaw <- gsm.mapping::Ingest(lSource, mappings_spec)
 
