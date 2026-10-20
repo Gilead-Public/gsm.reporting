@@ -20,6 +20,8 @@
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
+      nStep was not provided. Setting default step to 0.056.
+      Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 33.792.
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 2.112.
@@ -33,12 +35,15 @@
       Parsed 1.5,2.5 to numeric vector: 1.5, 2.5
       Parsed 1,2 to numeric vector: 1, 2
       Parsed 1,2 to numeric vector: 1, 2
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
     Condition
       Warning:
       Warning: Failed to parse strThreshold ('NA') to a numeric vector.
-    Message
-      Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 0.056.
     Output
       # A tibble: 11,356 x 8
          Threshold Denominator LogDenominator Numerator   Metric MetricID      StudyID
@@ -104,6 +109,8 @@
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
+      nStep was not provided. Setting default step to 0.056.
+      Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 33.792.
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 2.112.
@@ -117,12 +124,15 @@
       Parsed 1.5,2.5 to numeric vector: 1.5, 2.5
       Parsed 1,2 to numeric vector: 1, 2
       Parsed 1,2 to numeric vector: 1, 2
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
     Condition
       Warning:
       Warning: Failed to parse strThreshold ('NA') to a numeric vector.
-    Message
-      Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 0.056.
     Output
       # A tibble: 11,356 x 8
          Threshold Denominator LogDenominator Numerator   Metric MetricID      StudyID

@@ -46,7 +46,11 @@ lData <- list(
   Raw_OverallResponse = lSource$Raw_OverallResponse %>%
     rename(response_folder = foldername),
   Raw_Death = lSource$Raw_Death,
-  Raw_Randomization = lSource$Raw_Randomization
+  Raw_Randomization = lSource$Raw_Randomization,
+  Raw_VS = lSource$Raw_VS %>%
+    rename(studyid = project) %>%
+    rename(visit = foldername) %>%
+    rename(bsa = bsaentry)
 )
 
 ## Data with missing values (15% NA's)
@@ -64,8 +68,39 @@ mappings_wf <- workr::MakeWorkflowList(
   )
 )
 
-gsm.core::SetLogLevel("ERROR")
-mapped_data <- workr::RunWorkflows(mappings_wf, lData)
-gsm.core::SetLogLevel("DEBUG")
-
 mapping_output <- map(mappings_wf, ~ .x$steps[[1]]$output) %>% unlist()
+
+# Built lazily (and once per process) so tests that don't need them don't pay
+# the cost, and the qual tests share a single run.
+delayedAssign(
+  "mapped_data",
+  quietly_run(workr::RunWorkflows(mappings_wf, lData))
+)
+
+delayedAssign(
+  "kri_workflows",
+  workr::MakeWorkflowList(
+    strNames = c("kri", "srs"),
+    strPath = "workflow/2_metrics",
+    strPackage = "gsm.kri"
+  )
+)
+
+delayedAssign(
+  "analyzed",
+  quietly_run(workr::RunWorkflows(
+    kri_workflows,
+    lData = c(mapped_data, list(lWorkflows = kri_workflows))
+  ))
+)
+
+delayedAssign(
+  "reporting_workflows",
+  workr::MakeWorkflowList(
+    strPath = file.path(
+      system.file(package = "gsm.reporting"),
+      "workflow",
+      "3_reporting"
+    )
+  )
+)

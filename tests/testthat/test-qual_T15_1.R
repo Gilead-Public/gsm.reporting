@@ -1,21 +1,8 @@
 testthat::skip_if_not_installed("gsm.kri")
-TestAtLogLevel("WARN")
-## Test Setup
-kri_workflows <- workr::MakeWorkflowList(
-  strNames = c("kri", "srs"),
-  strPath = "workflow/2_metrics",
-  strPackage = "gsm.kri"
-)
-reporting_workflows <- workr::MakeWorkflowList(strPath = file.path(system.file(package = "gsm.reporting"), "workflow", "3_reporting"))
-analyzed <- workr::RunWorkflows(
-  kri_workflows,
-  lData = c(mapped_data, list(lWorkflows = kri_workflows))
-) %>%
-  suppressWarnings()
-outputs <- map(reporting_workflows, \(x) x$steps[[length(x$steps)]]$output)
-
 ## Test Code
 testthat::test_that("Qual: Given summarized analytics data, a properly specified reporting workflow creates cross-sectional results data set with one record per metric per group  (#50)", {
+  outputs <- map(reporting_workflows, \(x) x$steps[[length(x$steps)]]$output)
+  TestAtLogLevel("FATAL")
   expect_message(
     {
       test <- workr::RunWorkflows(
