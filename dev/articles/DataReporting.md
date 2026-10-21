@@ -21,7 +21,7 @@ data in the Raw/Raw+ format.
 All of the functions to create the data frames in the reporting data
 model will run automatically and sequentially when a user specifies the
 metadata and data needed for the report, and calls
-[`workr::RunWorkflow()`](https://rdrr.io/pkg/workr/man/RunWorkflow.html)
+[`workr::RunWorkflow()`](https://gilead-public.github.io/workr/reference/RunWorkflow.html)
 on the YAML files in the `workflow/3_reporting` directory. To create a
 report, the output of the reporting YAMLs is fed into the YAMLs in the
 `workflow/4_modules` directory to produce an HTML document with all
@@ -69,15 +69,12 @@ used in the reporting workflow:
 
 ``` r
 
-core_mappings <- c("AE", "COUNTRY", "DATACHG", "DATAENT", "ENROLL", "LB", "PK", "VISIT", "Death", "OverallResponse", "Randomization",
-                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ", "IE", "EXCLUSION", "IPNS")
-
 lSource <- gsm.core::lSource
 
 # Step 0 - Data Ingestion - standardize tables/columns names
-mappings_wf <- workr::MakeWorkflowList(strPath = "workflow/1_mappings", 
-                                       strNames = core_mappings,
-                                       strPackage = "gsm.mapping")
+mappings_wf <- workr::MakeWorkflowList(strPath = "workflow/1_mappings", strPackage = "gsm.mapping")
+# These domains are not present in gsm.core::lSource
+mappings_wf <- mappings_wf[setdiff(names(mappings_wf), c("AntiCancer", "Baseline", "Consents"))]
 mappings_spec <- CombineSpecs(mappings_wf)
 lRaw <- Ingest(lSource, mappings_spec)
 
@@ -87,14 +84,8 @@ mapped <- workr::RunWorkflows(mappings_wf, lRaw)
 # Step 2 - Create Metrics - calculate metrics using mapped data
 metrics_wf <- workr::MakeWorkflowList(strPath = "workflow/2_metrics", strNames = "kri", strPackage = "gsm.kri")
 lAnalysis <- workr::RunWorkflows(metrics_wf, mapped)
-#> Warning: 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
-#> 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
-#> 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
-#> 1 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
-#> Warning: 7 values of [ GroupID ] with a [ Denominator ] value of 0
-#> removed.
-#> Warning: 13 values of [ GroupID ] with a [ Denominator ] value of 0
-#> removed.
+#> Warning: 12 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
+#> 12 values of [ GroupID ] with a [ Denominator ] value of 0 removed.
 ```
 
 #### Step 1 - Create Reporting Model Data Frames
@@ -134,9 +125,9 @@ country-level information in the final report. This table is based on
 CTMS data and the mapped `dfEnrolled` data frame created in the Analysis
 workflow. Creating this table requires the creation of 5 smaller tables
 that summarize the data at each group level using
-[`workr::RunQuery()`](https://rdrr.io/pkg/workr/man/RunQuery.html) and
-`MakeLongMeta()`. These small tables are then bound together to create
-`dfGroups`.
+[`workr::RunQuery()`](https://gilead-public.github.io/workr/reference/RunQuery.html)
+and `MakeLongMeta()`. These small tables are then bound together to
+create `dfGroups`.
 
 ``` r
 
@@ -259,34 +250,39 @@ dfBounds <- gsm.reporting::MakeBounds(dfResults = dfResults,
                                       dfMetrics = dfMetrics)
 #> Creating stacked dfBounds data for strMetrics
 #> Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-#> nStep was not provided. Setting default step to 2.82.
+#> nStep was not provided. Setting default step to 3.22.
 #> Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-#> nStep was not provided. Setting default step to 2.82.
+#> nStep was not provided. Setting default step to 3.22.
 #> Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-#> nStep was not provided. Setting default step to 2.82.
+#> nStep was not provided. Setting default step to 3.22.
 #> Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-#> nStep was not provided. Setting default step to 2.82.
+#> nStep was not provided. Setting default step to 3.22.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 15.812.
+#> nStep was not provided. Setting default step to 18.348.
 #> Parsed 2,3 to numeric vector: 2, 3
 #> nStep was not provided. Setting default step to 0.056.
 #> Parsed 2,3 to numeric vector: 2, 3
 #> nStep was not provided. Setting default step to 0.056.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 28.672.
+#> nStep was not provided. Setting default step to 33.792.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 1.792.
+#> nStep was not provided. Setting default step to 2.112.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 7.168.
+#> nStep was not provided. Setting default step to 8.448.
 #> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 28.672.
+#> nStep was not provided. Setting default step to 33.792.
 #> Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-#> nStep was not provided. Setting default step to 0.068.
+#> nStep was not provided. Setting default step to 0.072.
 #> Parsed 0.9,0.85 to numeric vector: 0.9, 0.85
 #> Parsed 1.5,2.5 to numeric vector: 1.5, 2.5
 #> Parsed 1,2 to numeric vector: 1, 2
-#> Parsed 2,3 to numeric vector: 2, 3
-#> nStep was not provided. Setting default step to 0.056.
+#> Parsed 1,2 to numeric vector: 1, 2
+#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
 ```
 
 The resulting `dfBounds` data frame contains the following columns:
@@ -396,13 +392,12 @@ workflow individually before moving on to the next step.
 
 # Step 1 - Create Mapped Data - filter/map raw data
 # Source Data
-core_mappings <- c("AE", "COUNTRY", "DATACHG", "DATAENT", "ENROLL", "LB", "PK", "VISIT",
-                   "PD", "QUERY", "STUDY", "STUDCOMP", "SDRGCOMP", "SITE", "SUBJ")
-
 lSource <- gsm.core::lSource
 
 # Step 0 - Data Ingestion - standardize tables/columns names
-mappings_wf <- workr::MakeWorkflowList(strNames = core_mappings, strPath = "workflow/1_mappings", strPackage = "gsm.mapping")
+mappings_wf <- workr::MakeWorkflowList(strPath = "workflow/1_mappings", strPackage = "gsm.mapping")
+# These domains are not present in gsm.core::lSource
+mappings_wf <- mappings_wf[setdiff(names(mappings_wf), c("AntiCancer", "Baseline", "Consents"))]
 mappings_spec <- gsm.mapping::CombineSpecs(mappings_wf)
 lRaw <- gsm.mapping::Ingest(lSource, mappings_spec)
 
@@ -425,7 +420,7 @@ lReports <- workr::RunWorkflows(module_wf, reporting)
 |  |
 |:---|
 | \## Incorporating Historical data into the Reporting Output |
-| Using the output from the section above, you can modify the reporting workflow to include historical data by feeding the historical data into [`workr::RunWorkflows`](https://rdrr.io/pkg/workr/man/RunWorkflows.html) as a component of the `lData` argument. |
+| Using the output from the section above, you can modify the reporting workflow to include historical data by feeding the historical data into [`workr::RunWorkflows`](https://gilead-public.github.io/workr/reference/RunWorkflows.html) as a component of the `lData` argument. |
 | By including the `Reporting_Results_Longitudinal` data.frame, the [`CalculateChange()`](https://gilead-public.github.io/gsm.reporting/dev/reference/CalculateChange.md) function is triggered. This function calculates the change in the value (`_Change`) and the percentage change in the value (`_PercentChange`) between the previous snapshot and the current snapshot for all Reporting Result metrics. This is useful for longitudinal studies where you want to compare current results with past snapshots. |
 | \`\`\` r \# Prepare historical data historical \<- gsm.core::reportingResults %\>% filter(SnapshotDate == “2025-03-01”) |
 | \# Re-run reporting model and KRI report with historical data reporting_long \<- workr::RunWorkflows(reporting_wf, lData = c(mapped, list(lAnalyzed = analyzed, Reporting_Results_Longitudinal = historical, lWorkflows = metrics_wf))) lReports_long \<- workr::RunWorkflows(module_wf, reporting_long) \`\`\` |
@@ -435,7 +430,7 @@ lReports <- workr::RunWorkflows(module_wf, reporting)
 #### Recap - Reporting Workflow
 
 - `dfGroups` created from CTMS data using
-  [`workr::RunQuery()`](https://rdrr.io/pkg/workr/man/RunQuery.html),
+  [`workr::RunQuery()`](https://gilead-public.github.io/workr/reference/RunQuery.html),
   `MakeLongMeta()` and `bind_rows()`
 - `dfMetrics` created from `lWorkflow` using
   [`MakeMetric()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeMetric.md)
@@ -454,7 +449,7 @@ lReports <- workr::RunWorkflows(module_wf, reporting)
 
 #### Mapping Functions
 
-- [`workr::RunQuery()`](https://rdrr.io/pkg/workr/man/RunQuery.html):
+- [`workr::RunQuery()`](https://gilead-public.github.io/workr/reference/RunQuery.html):
   Run a SQL query to create new data.frames with filtering and column
   name specifications.
 

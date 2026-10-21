@@ -17,7 +17,7 @@ MakeMetric(lWorkflows)
 - lWorkflows:
 
   A list of workflows, like the one returned by
-  [`workr::MakeWorkflowList()`](https://rdrr.io/pkg/workr/man/MakeWorkflowList.html).
+  [`workr::MakeWorkflowList()`](https://gilead-public.github.io/workr/reference/MakeWorkflowList.html).
 
 ## Value
 
