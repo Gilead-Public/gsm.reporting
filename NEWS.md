@@ -1,3 +1,5 @@
+# gsm.reporting (development version)
+
 # gsm.reporting v1.1.8
 
 This patch release keeps the qualification tests and vignettes in step with the new IP Monitoring and Repeat Measurements mappings.
