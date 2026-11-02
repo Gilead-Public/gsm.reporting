@@ -1,29 +1,10 @@
 testthat::skip_if_not_installed("gsm.kri")
-TestAtLogLevel("WARN")
-## Test Setup
-kri_workflows <- workr::MakeWorkflowList(
-  strNames = c("kri", "srs"),
-  strPath = "workflow/2_metrics",
-  strPackage = "gsm.kri"
-)
-reporting_workflows <- workr::MakeWorkflowList(
-  strPath = file.path(
-    system.file(package = "gsm.reporting"),
-    "workflow",
-    "3_reporting"
-  )
-)
-analyzed <- workr::RunWorkflows(
-  kri_workflows,
-  lData = c(mapped_data, list(lWorkflows = kri_workflows))
-) %>%
-  suppressWarnings()
-outputs <- map(reporting_workflows, \(x) x$steps[[length(x$steps)]]$output)
-historical_reporting_results <- gsm.core::reportingResults %>%
-  dplyr::filter(SnapshotDate < max(.data$SnapshotDate))
 ## Test Code
 testthat::test_that("Qual: Given summarized analytics data and historical reporting results data, a properly specified reporting workflow creates cross-sectional results data set including changes from previous snapshot with one record per metric per group (#6, #30, #31, #35, #50)", {
-  test <- workr::RunWorkflows(
+  outputs <- map(reporting_workflows, \(x) x$steps[[length(x$steps)]]$output)
+  historical_reporting_results <- gsm.core::reportingResults %>%
+    dplyr::filter(SnapshotDate < max(.data$SnapshotDate))
+  test <- quietly_run(workr::RunWorkflows(
     reporting_workflows,
     lData = c(
       mapped_data,
@@ -33,8 +14,7 @@ testthat::test_that("Qual: Given summarized analytics data and historical report
         Reporting_Results_Longitudinal = historical_reporting_results
       )
     )
-  ) %>%
-    suppressWarnings()
+  ))
   # test output stucture
   expect_true(all(map_lgl(test, \(x) is.data.frame(x))))
   expect_equal(nrow(test$Reporting_Metrics), length(analyzed))

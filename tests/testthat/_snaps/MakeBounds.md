@@ -6,50 +6,59 @@
     Message
       Creating stacked dfBounds data for strMetrics
       Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 139.448.
+      nStep was not provided. Setting default step to 18.348.
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 288.768.
+      nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 18.048.
+      nStep was not provided. Setting default step to 33.792.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 72.192.
+      nStep was not provided. Setting default step to 2.112.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 288.768.
+      nStep was not provided. Setting default step to 8.448.
+      Parsed 2,3 to numeric vector: 2, 3
+      nStep was not provided. Setting default step to 33.792.
       Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-      nStep was not provided. Setting default step to 0.068.
+      nStep was not provided. Setting default step to 0.072.
       Parsed 0.9,0.85 to numeric vector: 0.9, 0.85
       Parsed 1.5,2.5 to numeric vector: 1.5, 2.5
       Parsed 1,2 to numeric vector: 1, 2
+      Parsed 1,2 to numeric vector: 1, 2
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
     Condition
       Warning:
       Warning: Failed to parse strThreshold ('NA') to a numeric vector.
     Output
-      # A tibble: 10,826 x 8
-         Threshold Denominator LogDenominator Numerator  Metric MetricID       StudyID
-             <dbl>       <dbl>          <dbl>     <dbl>   <dbl> <chr>          <chr>  
-       1        -2        95.5           4.56     0.139 0.00146 Analysis_kri0~ AA-AA-~
-       2        -2        98.7           4.59     0.284 0.00287 Analysis_kri0~ AA-AA-~
-       3        -2       102.            4.62     0.430 0.00422 Analysis_kri0~ AA-AA-~
-       4        -2       105.            4.66     0.579 0.00550 Analysis_kri0~ AA-AA-~
-       5        -2       108.            4.69     0.729 0.00673 Analysis_kri0~ AA-AA-~
-       6        -2       112.            4.72     0.882 0.00790 Analysis_kri0~ AA-AA-~
-       7        -2       115.            4.74     1.04  0.00902 Analysis_kri0~ AA-AA-~
-       8        -2       118.            4.77     1.19  0.0101  Analysis_kri0~ AA-AA-~
-       9        -2       121.            4.80     1.35  0.0111  Analysis_kri0~ AA-AA-~
-      10        -2       125.            4.82     1.51  0.0121  Analysis_kri0~ AA-AA-~
-      # i 10,816 more rows
+      # A tibble: 11,356 x 8
+         Threshold Denominator LogDenominator Numerator   Metric MetricID      StudyID
+             <dbl>       <dbl>          <dbl>     <dbl>    <dbl> <chr>         <chr>  
+       1        -2        156.           5.05    0.0889 0.000571 Analysis_kri~ AA-AA-~
+       2        -2        159.           5.07    0.221  0.00139  Analysis_kri~ AA-AA-~
+       3        -2        162            5.09    0.354  0.00218  Analysis_kri~ AA-AA-~
+       4        -2        165.           5.11    0.488  0.00295  Analysis_kri~ AA-AA-~
+       5        -2        168.           5.13    0.623  0.00370  Analysis_kri~ AA-AA-~
+       6        -2        172.           5.15    0.760  0.00443  Analysis_kri~ AA-AA-~
+       7        -2        175.           5.16    0.898  0.00514  Analysis_kri~ AA-AA-~
+       8        -2        178.           5.18    1.04   0.00582  Analysis_kri~ AA-AA-~
+       9        -2        181.           5.20    1.18   0.00649  Analysis_kri~ AA-AA-~
+      10        -2        185.           5.22    1.32   0.00714  Analysis_kri~ AA-AA-~
+      # i 11,346 more rows
       # i 1 more variable: SnapshotDate <date>
 
 # MakeBounds uses user-supplied strMetrics (#41)
@@ -60,22 +69,22 @@
     Message
       Creating stacked dfBounds data for strMetrics
       Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
     Output
-      # A tibble: 1,224 x 8
-         Threshold Denominator LogDenominator Numerator  Metric MetricID       StudyID
-             <dbl>       <dbl>          <dbl>     <dbl>   <dbl> <chr>          <chr>  
-       1        -2        95.5           4.56     0.139 0.00146 Analysis_kri0~ AA-AA-~
-       2        -2        98.7           4.59     0.284 0.00287 Analysis_kri0~ AA-AA-~
-       3        -2       102.            4.62     0.430 0.00422 Analysis_kri0~ AA-AA-~
-       4        -2       105.            4.66     0.579 0.00550 Analysis_kri0~ AA-AA-~
-       5        -2       108.            4.69     0.729 0.00673 Analysis_kri0~ AA-AA-~
-       6        -2       112.            4.72     0.882 0.00790 Analysis_kri0~ AA-AA-~
-       7        -2       115.            4.74     1.04  0.00902 Analysis_kri0~ AA-AA-~
-       8        -2       118.            4.77     1.19  0.0101  Analysis_kri0~ AA-AA-~
-       9        -2       121.            4.80     1.35  0.0111  Analysis_kri0~ AA-AA-~
-      10        -2       125.            4.82     1.51  0.0121  Analysis_kri0~ AA-AA-~
-      # i 1,214 more rows
+      # A tibble: 1,200 x 8
+         Threshold Denominator LogDenominator Numerator   Metric MetricID      StudyID
+             <dbl>       <dbl>          <dbl>     <dbl>    <dbl> <chr>         <chr>  
+       1        -2        156.           5.05    0.0889 0.000571 Analysis_kri~ AA-AA-~
+       2        -2        159.           5.07    0.221  0.00139  Analysis_kri~ AA-AA-~
+       3        -2        162            5.09    0.354  0.00218  Analysis_kri~ AA-AA-~
+       4        -2        165.           5.11    0.488  0.00295  Analysis_kri~ AA-AA-~
+       5        -2        168.           5.13    0.623  0.00370  Analysis_kri~ AA-AA-~
+       6        -2        172.           5.15    0.760  0.00443  Analysis_kri~ AA-AA-~
+       7        -2        175.           5.16    0.898  0.00514  Analysis_kri~ AA-AA-~
+       8        -2        178.           5.18    1.04   0.00582  Analysis_kri~ AA-AA-~
+       9        -2        181.           5.20    1.18   0.00649  Analysis_kri~ AA-AA-~
+      10        -2        185.           5.22    1.32   0.00714  Analysis_kri~ AA-AA-~
+      # i 1,190 more rows
       # i 1 more variable: SnapshotDate <date>
 
 # MakeBounds makes poisson dfBounds (#41)
@@ -86,49 +95,58 @@
     Message
       Creating stacked dfBounds data for strMetrics
       Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed -2,-1,2,3 to numeric vector: -2, -1, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-      nStep was not provided. Setting default step to 3.224.
+      nStep was not provided. Setting default step to 3.22.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 139.448.
+      nStep was not provided. Setting default step to 18.348.
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
       nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 288.768.
+      nStep was not provided. Setting default step to 0.056.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 18.048.
+      nStep was not provided. Setting default step to 33.792.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 72.192.
+      nStep was not provided. Setting default step to 2.112.
       Parsed 2,3 to numeric vector: 2, 3
-      nStep was not provided. Setting default step to 288.768.
+      nStep was not provided. Setting default step to 8.448.
+      Parsed 2,3 to numeric vector: 2, 3
+      nStep was not provided. Setting default step to 33.792.
       Parsed -3,-2,2,3 to numeric vector: -3, -2, 2, 3
-      nStep was not provided. Setting default step to 0.068.
+      nStep was not provided. Setting default step to 0.072.
       Parsed 0.9,0.85 to numeric vector: 0.9, 0.85
       Parsed 1.5,2.5 to numeric vector: 1.5, 2.5
       Parsed 1,2 to numeric vector: 1, 2
+      Parsed 1,2 to numeric vector: 1, 2
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
+      Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
     Condition
       Warning:
       Warning: Failed to parse strThreshold ('NA') to a numeric vector.
     Output
-      # A tibble: 10,826 x 8
-         Threshold Denominator LogDenominator Numerator  Metric MetricID       StudyID
-             <dbl>       <dbl>          <dbl>     <dbl>   <dbl> <chr>          <chr>  
-       1        -2        95.5           4.56     0.139 0.00146 Analysis_kri0~ AA-AA-~
-       2        -2        98.7           4.59     0.284 0.00287 Analysis_kri0~ AA-AA-~
-       3        -2       102.            4.62     0.430 0.00422 Analysis_kri0~ AA-AA-~
-       4        -2       105.            4.66     0.579 0.00550 Analysis_kri0~ AA-AA-~
-       5        -2       108.            4.69     0.729 0.00673 Analysis_kri0~ AA-AA-~
-       6        -2       112.            4.72     0.882 0.00790 Analysis_kri0~ AA-AA-~
-       7        -2       115.            4.74     1.04  0.00902 Analysis_kri0~ AA-AA-~
-       8        -2       118.            4.77     1.19  0.0101  Analysis_kri0~ AA-AA-~
-       9        -2       121.            4.80     1.35  0.0111  Analysis_kri0~ AA-AA-~
-      10        -2       125.            4.82     1.51  0.0121  Analysis_kri0~ AA-AA-~
-      # i 10,816 more rows
+      # A tibble: 11,356 x 8
+         Threshold Denominator LogDenominator Numerator   Metric MetricID      StudyID
+             <dbl>       <dbl>          <dbl>     <dbl>    <dbl> <chr>         <chr>  
+       1        -2        156.           5.05    0.0889 0.000571 Analysis_kri~ AA-AA-~
+       2        -2        159.           5.07    0.221  0.00139  Analysis_kri~ AA-AA-~
+       3        -2        162            5.09    0.354  0.00218  Analysis_kri~ AA-AA-~
+       4        -2        165.           5.11    0.488  0.00295  Analysis_kri~ AA-AA-~
+       5        -2        168.           5.13    0.623  0.00370  Analysis_kri~ AA-AA-~
+       6        -2        172.           5.15    0.760  0.00443  Analysis_kri~ AA-AA-~
+       7        -2        175.           5.16    0.898  0.00514  Analysis_kri~ AA-AA-~
+       8        -2        178.           5.18    1.04   0.00582  Analysis_kri~ AA-AA-~
+       9        -2        181.           5.20    1.18   0.00649  Analysis_kri~ AA-AA-~
+      10        -2        185.           5.22    1.32   0.00714  Analysis_kri~ AA-AA-~
+      # i 11,346 more rows
       # i 1 more variable: SnapshotDate <date>
 

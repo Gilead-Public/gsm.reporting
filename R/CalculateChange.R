@@ -159,7 +159,7 @@ CalculateChange <- function(
       "Param"
     )))) %>%
     dplyr::arrange(
-      strSnapshotDateColumn,
+      .data[[strSnapshotDateColumn]],
       .by_group = TRUE
     ) %>%
     dplyr::mutate(

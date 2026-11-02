@@ -1,3 +1,10 @@
+# gsm.reporting v1.1.8
+
+This patch release keeps the qualification tests and vignettes in step with the new IP Monitoring and Repeat Measurements mappings.
+
+- The qualification helper and `DataReporting` vignette now include derived mappings such as `Mapped_IPNS`, which are built from other mapped domains rather than a `Raw_*` dataset (#77).
+- The `DataReporting` vignette builds its mapping list with `workr::MakeWorkflowList()`, so it now includes `VS` and drops only mappings whose raw domains are not in `gsm.core::lSource` (#82).
+
 # gsm.reporting 1.1.7
 
 This patch release removes the log4r package dependency, because the log4r package was archived on CRAN (#66).
