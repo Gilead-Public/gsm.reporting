@@ -13,7 +13,7 @@ with the new IP Monitoring and Repeat Measurements mappings.
   [`workr::MakeWorkflowList()`](https://gilead-public.github.io/workr/reference/MakeWorkflowList.html),
   so it now includes `VS` and drops only mappings whose raw domains are
   not in
-  [`gsm.core::lSource`](https://gilead-biostats.github.io/gsm.core/reference/lSource.html)
+  [`gsm.core::lSource`](https://gilead-public.github.io/gsm.core/reference/lSource.html)
   ([\#82](https://github.com/Gilead-Public/gsm.reporting/issues/82)).
 
 ## gsm.reporting 1.1.7
@@ -28,9 +28,9 @@ This release migrates workflow orchestration to the new `workr` package
 and improves how metric metadata flows through to reports.
 
 **Changes:** - Workflow orchestration functions (such as
-[`MakeWorkflowList()`](https://gilead-biostats.github.io/gsm.core/reference/MakeWorkflowList.html)
+[`MakeWorkflowList()`](https://gilead-public.github.io/gsm.core/reference/MakeWorkflowList.html)
 and
-[`RunWorkflows()`](https://gilead-biostats.github.io/gsm.core/reference/RunWorkflows.html))
+[`RunWorkflows()`](https://gilead-public.github.io/gsm.core/reference/RunWorkflows.html))
 are now provided by the new `workr` package. Documentation and examples
 have been updated to reference `workr::` in place of `gsm.core::`. -
 [`MakeMetric()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeMetric.md)

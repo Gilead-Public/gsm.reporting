@@ -101,7 +101,7 @@ created are as follows:
     [`MakeMetric()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeMetric.md).
 3.  `dfResults`: A stacked summary of analysis pipeline output. Created
     by passing a list of results returned by
-    [`Summarize()`](https://gilead-biostats.github.io/gsm.core/reference/Summarize.html)
+    [`Summarize()`](https://gilead-public.github.io/gsm.core/reference/Summarize.html)
     to
     [`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md).
 4.  `dfBounds`: Set of predicted percentages/rates and upper- and
@@ -276,13 +276,6 @@ dfBounds <- gsm.reporting::MakeBounds(dfResults = dfResults,
 #> Parsed 0.9,0.85 to numeric vector: 0.9, 0.85
 #> Parsed 1.5,2.5 to numeric vector: 1.5, 2.5
 #> Parsed 1,2 to numeric vector: 1, 2
-#> Parsed 1,2 to numeric vector: 1, 2
-#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
-#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
-#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
-#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
-#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
-#> Parsed 0.2,0.3 to numeric vector: 0.2, 0.3
 ```
 
 The resulting `dfBounds` data frame contains the following columns:
