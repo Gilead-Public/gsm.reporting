@@ -101,7 +101,7 @@ created are as follows:
     [`MakeMetric()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeMetric.md).
 3.  `dfResults`: A stacked summary of analysis pipeline output. Created
     by passing a list of results returned by
-    [`Summarize()`](https://gilead-biostats.github.io/gsm.core/reference/Summarize.html)
+    [`Summarize()`](https://gilead-public.github.io/gsm.core/reference/Summarize.html)
     to
     [`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md).
 4.  `dfBounds`: Set of predicted percentages/rates and upper- and
