@@ -41,8 +41,8 @@ VignetteBuilder:
     knitr
 Remotes:
     gsm.core=Gilead-Public/gsm.core@dev,
-    gsm.kri=Gilead-Public/gsm.kri@dev,
-    gsm.mapping=Gilead-Public/gsm.mapping@dev,
+    gsm.kri=Gilead-Public/gsm.kri@dev-1.8.0.9000,
+    gsm.mapping=Gilead-Public/gsm.mapping@dev-1.2.0.9000,
     workr=Gilead-Public/workr@main
 Config/testthat/edition: 3
 Config/testthat/parallel: true
