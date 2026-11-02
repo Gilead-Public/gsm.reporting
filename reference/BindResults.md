@@ -4,7 +4,7 @@
 
 Used to stack results (e.g. `dfSummary`) from a list of analysis
 pipeline output formatted like the result of
-[`workr::RunWorkflows()`](https://rdrr.io/pkg/workr/man/RunWorkflows.html).
+[`workr::RunWorkflows()`](https://gilead-public.github.io/workr/reference/RunWorkflows.html).
 Also adds study level metadata when provided.
 
 ## Usage
@@ -24,7 +24,7 @@ BindResults(
 - lAnalysis:
 
   Named List of analysis results in the format returned by
-  [`workr::RunWorkflows()`](https://rdrr.io/pkg/workr/man/RunWorkflows.html).
+  [`workr::RunWorkflows()`](https://gilead-public.github.io/workr/reference/RunWorkflows.html).
 
 - strName:
 

@@ -24,7 +24,7 @@ CalculateChange(
 
   `data.frame` A stacked summary of analysis pipeline output. Created by
   passing a list of results returned by
-  [`gsm.core::Summarize()`](https://rdrr.io/pkg/gsm.core/man/Summarize.html)
+  [`gsm.core::Summarize()`](https://gilead-public.github.io/gsm.core/reference/Summarize.html)
   to
   [`BindResults()`](https://gilead-public.github.io/gsm.reporting/reference/BindResults.md).
   Expected columns: `GroupID`, `GroupLevel`, `Numerator`, `Denominator`,
@@ -34,7 +34,7 @@ CalculateChange(
 
   `data.frame` A stacked summary of analysis pipeline output from the
   previous snapshot. Created by passing a list of results returned by
-  [`gsm.core::Summarize()`](https://rdrr.io/pkg/gsm.core/man/Summarize.html)
+  [`gsm.core::Summarize()`](https://gilead-public.github.io/gsm.core/reference/Summarize.html)
   to
   [`BindResults()`](https://gilead-public.github.io/gsm.reporting/reference/BindResults.md).
   Expected columns: `GroupID`, `GroupLevel`, `Numerator`, `Denominator`,

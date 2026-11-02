@@ -16,7 +16,7 @@ const addSelectControl = function(widgetControls, label, values, addNone = true,
     // add control label
     const selectLabel = document.createElement('span');
     selectLabel.classList.add("gsm-widget-control--label")
-    selectLabel.innerHTML = label;
+    selectLabel.textContent = label;
     selectContainer.appendChild(selectLabel)
 
     // add control
@@ -27,14 +27,14 @@ const addSelectControl = function(widgetControls, label, values, addNone = true,
     // add default option
     if (addNone) {
         const noneOption = document.createElement('option');
-        noneOption.innerHTML = defaultValue;
+        noneOption.textContent = defaultValue;
         select.appendChild(noneOption);
     }
 
     // add data-driven values
     for (const value of values) {
         const option = document.createElement('option');
-        option.innerHTML = value;
+        option.textContent = value;
         select.appendChild(option);
     }
 
