@@ -1,6 +1,6 @@
 # gsm.reporting (development version)
 
-- `gsm.kri` is no longer a suggested dependency, which removes the circular dependency between `gsm.reporting` and `gsm.kri`. New `FilterByLatestSnapshotDate()` replaces `gsm.kri::FilterByLatestSnapshotDate()` in the `Results` reporting workflow. The `DataReporting` vignette, which demonstrates the full pipeline including `gsm.kri` charts and reports, is now a pkgdown article.
+- `gsm.kri` is no longer a suggested dependency, which removes the circular dependency between `gsm.reporting` and `gsm.kri`.
 
 # gsm.reporting v1.1.8
 
