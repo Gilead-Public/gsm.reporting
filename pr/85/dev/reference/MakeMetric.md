@@ -26,12 +26,14 @@ A data frame.
 ## Examples
 
 ``` r
-if (FALSE) { # \dontrun{
-lWorkflows <- workr::MakeWorkflowList(
-  strPath = "workflow/2_metrics",
-  strNames = "kri",
-  strPackage = "gsm.kri"
+lWorkflows <- list(
+  kri0001 = list(meta = list(Type = "Analysis", ID = "kri0001")),
+  kri0002 = list(meta = list(Type = "Analysis", ID = "kri0002"))
 )
-dfMetrics <- MakeMetric(lWorkflows)
-} # }
+MakeMetric(lWorkflows)
+#> # A tibble: 2 × 3
+#>   Type     ID      MetricID        
+#>   <chr>    <chr>   <chr>           
+#> 1 Analysis kri0001 Analysis_kri0001
+#> 2 Analysis kri0002 Analysis_kri0002
 ```
