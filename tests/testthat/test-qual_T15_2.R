@@ -1,4 +1,4 @@
-testthat::skip_if_not_installed("gsm.kri")
+testthat::skip_if_not_installed("gsm.mapping")
 ## Test Code
 testthat::test_that("Qual: Given summarized analytics data and historical reporting results data, a properly specified reporting workflow creates cross-sectional results data set including changes from previous snapshot with one record per metric per group (#6, #30, #31, #35, #50)", {
   outputs <- map(reporting_workflows, \(x) x$steps[[length(x$steps)]]$output)
@@ -136,7 +136,7 @@ testthat::test_that("Qual: Given summarized analytics data and historical report
     ) %>%
     dplyr::rename_with(~ gsub("_Value", "", .x), tidyr::ends_with("_Value"))
 
-  dfChanges <- gsm.kri::FilterByLatestSnapshotDate(dfChanges)
+  dfChanges <- FilterByLatestSnapshotDate(dfChanges)
 
   expect_equal(test$Reporting_Results, dfChanges)
 

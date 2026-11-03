@@ -21,13 +21,10 @@ This function takes a list of workflows and returns a data frame with one row
 per \code{MetricID}.
 }
 \examples{
-\dontrun{
-lWorkflows <- workr::MakeWorkflowList(
-  strPath = "workflow/2_metrics",
-  strNames = "kri",
-  strPackage = "gsm.kri"
+lWorkflows <- list(
+  kri0001 = list(meta = list(Type = "Analysis", ID = "kri0001")),
+  kri0002 = list(meta = list(Type = "Analysis", ID = "kri0002"))
 )
-dfMetrics <- MakeMetric(lWorkflows)
-}
+MakeMetric(lWorkflows)
 
 }
