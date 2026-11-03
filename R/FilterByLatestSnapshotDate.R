@@ -40,12 +40,6 @@ FilterByLatestSnapshotDate <- function(df, strSnapshotDate = NULL) {
   return(dplyr::filter(df, .data$SnapshotDate == strSnapshotDate))
 }
 
-#' Default value for zero-length objects
-#'
-#' @param x Object to return if it has non-zero length.
-#' @param y Object to return if `x` has zero length.
-#' @returns `x` if it has non-zero length, otherwise `y`.
-#' @keywords internal
 `%|0|%` <- function(x, y) {
   if (length(x)) {
     return(x)

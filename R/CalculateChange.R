@@ -197,7 +197,7 @@ CalculateChange <- function(
       strSnapshotDateColumn
     )))) %>%
     tidyr::pivot_wider(
-      names_from = Param,
+      names_from = "Param",
       values_from = c("Value", "Previous", "Change", "PercentChange"),
       names_glue = "{Param}_{.value}",
     ) %>%
