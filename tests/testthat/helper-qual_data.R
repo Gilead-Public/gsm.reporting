@@ -80,9 +80,7 @@ delayedAssign(
 delayedAssign(
   "kri_workflows",
   workr::MakeWorkflowList(
-    strNames = c("kri", "srs"),
-    strPath = "workflow/2_metrics",
-    strPackage = "gsm.kri"
+    strPath = test_path("fixtures", "workflow", "2_metrics")
   )
 )
 

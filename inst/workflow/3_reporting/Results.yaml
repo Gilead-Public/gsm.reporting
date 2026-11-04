@@ -35,7 +35,7 @@ steps:
       dfResultsLongitudinal: Reporting_Results_Longitudinal
   # Subset on latest snapshot.
   - output: Reporting_Results
-    name: gsm.kri::FilterByLatestSnapshotDate
+    name: gsm.reporting::FilterByLatestSnapshotDate
     params:
       df: Reporting_Results_With_Changes
 

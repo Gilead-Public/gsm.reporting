@@ -1,3 +1,7 @@
+# gsm.reporting (development version)
+
+- `gsm.kri` is no longer a suggested dependency, which removes the circular dependency between `gsm.reporting` and `gsm.kri`.
+
 # gsm.reporting v1.1.8
 
 This patch release keeps the qualification tests and vignettes in step with the new IP Monitoring and Repeat Measurements mappings.
