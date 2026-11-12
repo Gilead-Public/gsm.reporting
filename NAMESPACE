@@ -2,6 +2,7 @@
 
 export(BindResults)
 export(CalculateChange)
+export(FilterByLatestSnapshotDate)
 export(MakeBounds)
 export(MakeMetric)
 import(dplyr)

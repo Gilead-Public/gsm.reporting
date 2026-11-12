@@ -184,3 +184,23 @@ test_that("[ CalculateChange ] returns message and dfResults unchanged if dfPrev
   )
   expect_equal(dfChanges, dfResults)
 })
+
+test_that("[ CalculateChange ] compares against the latest previous snapshot regardless of input row order. (#30)", {
+  dfOlder <- dfPrevious
+  dfOlder$SnapshotDate <- as.Date("2023-01-01")
+  dfOlder$Numerator <- dfOlder$Numerator + 100
+  # Most recent previous snapshot first, older snapshot after.
+  dfLongitudinal <- rbind(dfPrevious, dfOlder)
+
+  dfChanges <- CalculateChange(
+    dfResults = dfResults,
+    dfResultsLongitudinal = dfLongitudinal
+  )
+  dfCurrent <- dfChanges[dfChanges$SnapshotDate == as.Date("2023-03-01"), ]
+
+  expect_equal(
+    unique(dfCurrent$SnapshotDate_Previous),
+    as.Date("2023-02-01")
+  )
+  expect_equal(dfCurrent$Numerator_Previous, dfPrevious$Numerator)
+})

@@ -1,6 +1,6 @@
 Package: gsm.reporting
 Title: Good Statistical Monitoring Reporting
-Version: 1.1.7.9000
+Version: 1.1.8.9000
 Authors@R: c(
     person("Jeremy", "Wildfire", , "jwildfire@gmail.com", role = c("aut", "cre")),
     person("Laura", "Maxwell", , "lkmaxwell23@gmail.com", role = "aut"),
@@ -22,15 +22,15 @@ Imports:
     cli,
     dplyr,
     glue,
-    gsm.core (>= 1.1.3),
+    gsm.core (>= 1.3.2),
     purrr,
+    rlang,
     tibble,
     tidyr,
     yaml
 Suggests:
     DT,
-    gsm.kri (>= 1.2.0),
-    gsm.mapping (>= 1.1.0),
+    gsm.mapping (>= 1.2.0),
     gt,
     knitr,
     rmarkdown,
@@ -41,7 +41,6 @@ VignetteBuilder:
     knitr
 Remotes:
     gsm.core=Gilead-Public/gsm.core@actionlog-report-fixture,
-    gsm.kri=Gilead-Public/gsm.kri@for-ipns-140,
     gsm.mapping=Gilead-Public/gsm.mapping@dev,
     workr=Gilead-Public/workr@main
 Config/testthat/edition: 3
@@ -49,4 +48,4 @@ Config/testthat/parallel: true
 Encoding: UTF-8
 Language: en-US
 Roxygen: list(markdown = TRUE)
-Config/roxygen2/version: 8.1.0
+Config/roxygen2/version: 8.1.1

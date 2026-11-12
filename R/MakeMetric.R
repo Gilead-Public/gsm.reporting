@@ -13,27 +13,32 @@
 #' @return A data frame.
 #'
 #' @examples
-#' \dontrun{
-#' lWorkflows <- workr::MakeWorkflowList(
-#'   strPath = "workflow/2_metrics",
-#'   strNames = "kri",
-#'   strPackage = "gsm.kri"
+#' lWorkflows <- list(
+#'   kri0001 = list(meta = list(Type = "Analysis", ID = "kri0001")),
+#'   kri0002 = list(meta = list(Type = "Analysis", ID = "kri0002"))
 #' )
-#' dfMetrics <- MakeMetric(lWorkflows)
-#' }
+#' MakeMetric(lWorkflows)
 #'
 #' @export
 MakeMetric <- function(lWorkflows) {
   # check to make sure Type and ID exist for naming
-  missing_types <- which(sapply(lWorkflows, function(x) is.null(x$meta$Type))) %>% names()
-  missing_ids <- which(sapply(lWorkflows, function(x) is.null(x$meta$ID))) %>% names()
+  missing_types <- which(sapply(lWorkflows, function(x) {
+    is.null(x$meta$Type)
+  })) %>%
+    names()
+  missing_ids <- which(sapply(lWorkflows, function(x) is.null(x$meta$ID))) %>%
+    names()
   stop_if(
     cnd = length(missing_types > 0),
-    message = glue::glue("The following workflows are missing the 'Type' field in `meta`: {missing_types}")
+    message = glue::glue(
+      "The following workflows are missing the 'Type' field in `meta`: {missing_types}"
+    )
   )
   stop_if(
     cnd = length(missing_ids > 0),
-    message = glue::glue("The following workflows are missing the 'ID' field in `meta`: {missing_ids}")
+    message = glue::glue(
+      "The following workflows are missing the 'ID' field in `meta`: {missing_ids}"
+    )
   )
 
   dfMetrics <- lWorkflows %>%
