@@ -277,7 +277,7 @@ test_that("[ CalculateChange ] compares against the latest previous snapshot reg
   expect_equal(dfCurrent$Numerator_Previous, dfPrevious$Numerator)
 })
 
-test_that("[ CalculateChange ] validates an explicitly selected previous snapshot date.", {
+test_that("[ CalculateChange ] validates an explicitly selected previous snapshot date. (#88)", {
   expect_error(
     CalculateChange(
       dfResults = dfResults,
