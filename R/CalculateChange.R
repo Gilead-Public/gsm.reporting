@@ -33,8 +33,9 @@
 #'   - Score
 #'   - Flag
 #'
-#' @return `data.frame` A transposed table of results with a column for each attribute, its value,
-#'   and the change from the previous snapshot.
+#' @returns A `data.frame` with the current values and the previous values, changes, and percent
+#'   changes for each metric. When no previous snapshot is available, the previous-snapshot and
+#'   change columns are included with `NA` values.
 #'
 #' @examples
 #' dfResults <- gsm.core::reportingResults |> dplyr::filter(SnapshotDate == "2025-04-01")
@@ -70,14 +71,13 @@ CalculateChange <- function(
     message = "`dfResults` must be a data frame."
   )
 
-  # If dfResultsLongitudinal is not a data.frame, just return the dfResults
-  if (
-    !is.data.frame(dfResultsLongitudinal) || nrow(dfResultsLongitudinal) == 0
-  ) {
+  bHasLongitudinal <- is.data.frame(dfResultsLongitudinal) &&
+    nrow(dfResultsLongitudinal) > 0
+
+  if (!bHasLongitudinal) {
     cli::cli_alert_info(
-      "`dfResultsLongitudinal` not supplied properly, so dfResults will be returned unchanged."
+      "`dfResultsLongitudinal` not supplied properly, so change columns will be returned as `NA`."
     )
-    return(dfResults)
   }
 
   # Check that all columns exist in [ dfResults ] and [ dfResultsLongitudinal ].
@@ -90,18 +90,25 @@ CalculateChange <- function(
       cnd = !strColumn %in% colnames(dfResults),
       message = glue::glue("`{strColumn} not found in `dfResults`.")
     )
-    stop_if(
-      cnd = !strColumn %in% colnames(dfResultsLongitudinal),
-      message = glue::glue("`{strColumn} not found in `dfResultsLongitudinal`.")
-    )
+    if (bHasLongitudinal) {
+      stop_if(
+        cnd = !strColumn %in% colnames(dfResultsLongitudinal),
+        message = glue::glue(
+          "`{strColumn} not found in `dfResultsLongitudinal`."
+        )
+      )
+    }
   }
 
-  # Determine current snapshot date and ensure formatted as date
-  dCurrentSnapshotDate <- max(dfResults[[strSnapshotDateColumn]], na.rm = T) %>%
-    as.Date()
-
   # Filter out current snapshot from longitudinal data if present
-  if (!is.null(dfResultsLongitudinal) && nrow(dfResultsLongitudinal) > 0) {
+  if (bHasLongitudinal) {
+    # Determine current snapshot date and ensure formatted as date
+    dCurrentSnapshotDate <- max(
+      dfResults[[strSnapshotDateColumn]],
+      na.rm = T
+    ) %>%
+      as.Date()
+
     if (
       dCurrentSnapshotDate %in% dfResultsLongitudinal[[strSnapshotDateColumn]]
     ) {
@@ -120,10 +127,47 @@ CalculateChange <- function(
     ]]))
     if (length(available_dates) == 0) {
       cli::cli_alert_info(
-        "No valid previous snapshots in longitudinal data - returning current results unchanged."
+        "No valid previous snapshots in longitudinal data - change columns will be returned as `NA`."
       )
-      return(dfResults)
+      bHasLongitudinal <- FALSE
     }
+  }
+
+  if (!bHasLongitudinal) {
+    strOutputColumns <- c(
+      strIDColumns,
+      strSnapshotDateColumn,
+      "SnapshotDate_Previous",
+      strMetricColumns,
+      paste0(strMetricColumns, "_Previous"),
+      paste0(strMetricColumns, "_Change"),
+      paste0(strMetricColumns, "_PercentChange")
+    )
+
+    dfResults <- dfResults %>%
+      dplyr::select(all_of(c(
+        strIDColumns,
+        strSnapshotDateColumn,
+        strMetricColumns
+      )))
+    dfResults$SnapshotDate_Previous <- dfResults[[strSnapshotDateColumn]][
+      rep(NA_integer_, nrow(dfResults))
+    ]
+
+    for (strColumn in strMetricColumns) {
+      dfResults[[paste0(strColumn, "_Previous")]] <- dfResults[[strColumn]][
+        rep(NA_integer_, nrow(dfResults))
+      ]
+      dfResults[[paste0(strColumn, "_Change")]] <- dfResults[[strColumn]][
+        rep(NA_integer_, nrow(dfResults))
+      ]
+      dfResults[[paste0(strColumn, "_PercentChange")]] <- rep(
+        NA_real_,
+        nrow(dfResults)
+      )
+    }
+
+    return(dfResults %>% dplyr::select(all_of(strOutputColumns)))
   }
 
   # Bind dfResults and dfResultsLongitudinal and keep appropriate columns

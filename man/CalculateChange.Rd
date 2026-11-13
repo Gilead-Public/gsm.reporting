@@ -53,8 +53,9 @@ previous snapshot. Default:
 }}
 }
 \value{
-\code{data.frame} A transposed table of results with a column for each attribute, its value,
-and the change from the previous snapshot.
+A \code{data.frame} with the current values and the previous values, changes, and percent
+changes for each metric. When no previous snapshot is available, the previous-snapshot and
+change columns are included with \code{NA} values.
 }
 \description{
 Calculate the change of user-specified metrics from the previous snapshot date.

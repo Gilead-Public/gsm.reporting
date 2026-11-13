@@ -173,16 +173,88 @@ test_that("[ CalculateChange ] correctly calculates change from the previous sna
   )
 })
 
-test_that("[ CalculateChange ] returns message and dfResults unchanged if dfPrevious not supplied. (#31, #30)", {
+test_that("[ CalculateChange ] returns the standard columns when no previous snapshot is supplied. (#31, #30, #88)", {
   expect_message(
     {
       dfChanges <- CalculateChange(
         dfResults = dfResults
       )
     },
-    "dfResults will be returned unchanged"
+    "change columns will be returned as"
   )
-  expect_equal(dfChanges, dfResults)
+
+  strChangeColumns <- c(
+    "SnapshotDate_Previous",
+    paste0(strMetricColumns, "_Previous"),
+    paste0(strMetricColumns, "_Change"),
+    paste0(strMetricColumns, "_PercentChange")
+  )
+
+  expect_equal(
+    colnames(dfChanges),
+    c(
+      strIDColumns,
+      strSnapshotDateColumn,
+      strChangeColumns[1],
+      strMetricColumns,
+      strChangeColumns[-1]
+    )
+  )
+  expect_equal(
+    colnames(dfChanges),
+    colnames(CalculateChange(dfResults, dfPrevious))
+  )
+  expect_equal(
+    dfChanges[, c(strIDColumns, strSnapshotDateColumn, strMetricColumns)],
+    dfResults[, c(strIDColumns, strSnapshotDateColumn, strMetricColumns)]
+  )
+  expect_true(all(is.na(dfChanges[, strChangeColumns])))
+
+  expect_message(
+    dfEmptyLongitudinal <- CalculateChange(
+      dfResults = dfResults,
+      dfResultsLongitudinal = data.frame()
+    ),
+    "change columns will be returned as"
+  )
+  expect_equal(colnames(dfEmptyLongitudinal), colnames(dfChanges))
+  expect_true(all(is.na(dfEmptyLongitudinal[, strChangeColumns])))
+
+  expect_message(
+    dfEmptyResults <- CalculateChange(
+      dfResults = dfResults[0, ]
+    ),
+    "change columns will be returned as"
+  )
+  expect_equal(colnames(dfEmptyResults), colnames(dfChanges))
+  expect_equal(nrow(dfEmptyResults), 0)
+})
+
+test_that("[ CalculateChange ] returns the standard columns when no earlier snapshot exists. (#88)", {
+  dfCurrentOnly <- dfResults
+
+  expect_message(
+    dfChanges <- CalculateChange(
+      dfResults = dfResults,
+      dfResultsLongitudinal = dfCurrentOnly
+    ),
+    "No valid previous snapshots"
+  )
+
+  expect_true(all(
+    c(
+      "SnapshotDate_Previous",
+      paste0(strMetricColumns, "_Previous"),
+      paste0(strMetricColumns, "_Change"),
+      paste0(strMetricColumns, "_PercentChange")
+    ) %in%
+      colnames(dfChanges)
+  ))
+  expect_true(all(is.na(dfChanges$SnapshotDate_Previous)))
+  expect_true(all(is.na(dfChanges$Numerator_Previous)))
+  expect_true(all(is.na(dfChanges$Numerator_Change)))
+  expect_true(all(is.na(dfChanges$Numerator_PercentChange)))
+  expect_equal(dfChanges$Numerator, dfResults$Numerator)
 })
 
 test_that("[ CalculateChange ] compares against the latest previous snapshot regardless of input row order. (#30)", {
@@ -203,4 +275,34 @@ test_that("[ CalculateChange ] compares against the latest previous snapshot reg
     as.Date("2023-02-01")
   )
   expect_equal(dfCurrent$Numerator_Previous, dfPrevious$Numerator)
+})
+
+test_that("[ CalculateChange ] validates an explicitly selected previous snapshot date.", {
+  expect_error(
+    CalculateChange(
+      dfResults = dfResults,
+      dfResultsLongitudinal = dfPrevious,
+      dPrevSnapshotDate = as.Date("2023-01-01")
+    ),
+    "not found in"
+  )
+  expect_error(
+    CalculateChange(
+      dfResults = dfResults,
+      dfResultsLongitudinal = dfPrevious,
+      dPrevSnapshotDate = as.Date("2023-03-01")
+    ),
+    "cannot be equal"
+  )
+
+  dfChanges <- CalculateChange(
+    dfResults = dfResults,
+    dfResultsLongitudinal = dfPrevious,
+    dPrevSnapshotDate = as.Date("2023-02-01")
+  )
+
+  expect_equal(
+    colnames(dfChanges),
+    colnames(CalculateChange(dfResults, dfPrevious))
+  )
 })
