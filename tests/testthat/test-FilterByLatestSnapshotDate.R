@@ -8,6 +8,23 @@ test_that("FilterByLatestSnapshotDate keeps only the latest snapshot", {
   expect_s3_class(test_result$SnapshotDate, "Date")
 })
 
+test_that("FilterByLatestSnapshotDate ignores missing snapshot dates", {
+  df <- data.frame(
+    x = 1:3,
+    SnapshotDate = c("2025-01-01", NA, "2025-02-01")
+  )
+  test_result <- FilterByLatestSnapshotDate(df)
+  expect_equal(test_result$x, 3L)
+  expect_s3_class(test_result$SnapshotDate, "Date")
+})
+
+test_that("FilterByLatestSnapshotDate returns no rows for all-missing dates", {
+  df <- data.frame(x = 1:2, SnapshotDate = c(NA, NA))
+  test_result <- FilterByLatestSnapshotDate(df)
+  expect_equal(nrow(test_result), 0L)
+  expect_s3_class(test_result$SnapshotDate, "Date")
+})
+
 test_that("FilterByLatestSnapshotDate filters to strSnapshotDate", {
   df <- data.frame(
     x = 1:3,

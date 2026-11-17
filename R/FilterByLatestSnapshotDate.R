@@ -35,7 +35,12 @@ FilterByLatestSnapshotDate <- function(df, strSnapshotDate = NULL) {
     }
     return(df)
   }
-  strSnapshotDate <- as.Date(strSnapshotDate) %|0|% max(df$SnapshotDate)
+  strSnapshotDate <- as.Date(strSnapshotDate) %|0|%
+    if (all(is.na(df$SnapshotDate))) {
+      NA_character_
+    } else {
+      max(df$SnapshotDate, na.rm = TRUE)
+    }
   df$SnapshotDate <- as.Date(df$SnapshotDate)
   return(dplyr::filter(df, .data$SnapshotDate == strSnapshotDate))
 }

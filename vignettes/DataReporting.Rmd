@@ -149,7 +149,7 @@ dfBounds
 
 ## Running the reporting workflows
 
-The same steps run automatically through the YAML workflows in `inst/workflow/3_reporting`. Supply `Reporting_Results_Longitudinal` to include changes from earlier snapshots; without it, `CalculateChange()` logs a message and returns `Reporting_Results` without change columns.
+The same steps run automatically through the YAML workflows in `inst/workflow/3_reporting`. Supply `Reporting_Results_Longitudinal` to include changes from earlier snapshots; without it, `CalculateChange()` logs a message and returns the standard columns, with previous-snapshot and change values set to `NA`.
 
 ```{r workflows, results = "hide"}
 reporting_wf <- workr::MakeWorkflowList(
