@@ -47,4 +47,16 @@ test_that("FilterByLatestSnapshotDate returns input without rows or SnapshotDate
   expect_identical(FilterByLatestSnapshotDate(df_empty), df_empty)
   df_no_date <- data.frame(x = 1:2)
   expect_identical(FilterByLatestSnapshotDate(df_no_date), df_no_date)
+  df_partial_date <- data.frame(
+    x = 1:2,
+    SnapshotDate_Previous = c("2025-01-01", "2025-02-01")
+  )
+  expect_identical(
+    FilterByLatestSnapshotDate(df_partial_date),
+    df_partial_date
+  )
+  expect_error(
+    FilterByLatestSnapshotDate(df_partial_date, "2025-01-01"),
+    "df_partial_date"
+  )
 })
