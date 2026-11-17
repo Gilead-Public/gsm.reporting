@@ -1,4 +1,4 @@
-testthat::skip_if_not_installed("gsm.kri")
+testthat::skip_if_not_installed("gsm.mapping")
 ## Test Code
 testthat::test_that("Qual: Given summarized analytics data, a properly specified reporting workflow creates cross-sectional results data set with one record per metric per group  (#50)", {
   outputs <- map(reporting_workflows, \(x) x$steps[[length(x$steps)]]$output)

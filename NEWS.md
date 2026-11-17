@@ -1,3 +1,19 @@
+# gsm.reporting v1.1.9
+
+This patch release removes the circular dependency on `gsm.kri` and makes
+`CalculateChange()` return a consistent set of columns when historical data is
+unavailable.
+
+**Changes:**
+- `FilterByLatestSnapshotDate()` is now provided by `gsm.reporting`, and
+  `gsm.kri` is no longer a suggested dependency. The `DataReporting` vignette
+  and qualification tests no longer rely on `gsm.kri`.
+- `CalculateChange()` preserves current values and returns previous-snapshot
+  and change columns filled with `NA` when no previous snapshot is available
+  (#88).
+- The qualification test helper renames its local source variable to avoid
+  colliding with `gsm.core`'s read-only binding (#91).
+
 # gsm.reporting v1.1.8
 
 This patch release keeps the qualification tests and vignettes in step with the new IP Monitoring and Repeat Measurements mappings.

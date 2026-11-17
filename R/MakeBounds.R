@@ -42,9 +42,18 @@ MakeBounds <- function(
   dSnapshotDate = unique(dfResults$SnapshotDate),
   strStudyID = unique(dfResults$StudyID)
 ) {
-  stop_if(cnd = !length(strMetrics), message = "`strMetrics` must not be `NULL`.")
-  stop_if(cnd = !length(dSnapshotDate), message = "`dSnapshotDate` must not be `NULL`.")
-  stop_if(cnd = !length(strStudyID), message = "`strStudyID` must not be `NULL`.")
+  stop_if(
+    cnd = !length(strMetrics),
+    message = "`strMetrics` must not be `NULL`."
+  )
+  stop_if(
+    cnd = !length(dSnapshotDate),
+    message = "`dSnapshotDate` must not be `NULL`."
+  )
+  stop_if(
+    cnd = !length(strStudyID),
+    message = "`strStudyID` must not be `NULL`."
+  )
 
   LogMessage(
     level = "info",
@@ -90,11 +99,15 @@ MakeBounds <- function(
 
       vThreshold <- ParseThreshold(strThreshold = lMetric$Threshold)
 
-      if (!is.null(lMetric$AnalysisType) &&
-        tolower(unique(lMetric$AnalysisType)) %in% "identity") {
+      if (
+        !is.null(lMetric$AnalysisType) &&
+          tolower(unique(lMetric$AnalysisType)) %in% "identity"
+      ) {
         return(NULL)
-      } else if (!is.null(lMetric$AnalysisType) &&
-        tolower(unique(lMetric$AnalysisType)) %in% "poisson") {
+      } else if (
+        !is.null(lMetric$AnalysisType) &&
+          tolower(unique(lMetric$AnalysisType)) %in% "poisson"
+      ) {
         Analyze_Poisson_PredictBounds(
           dfResult,
           vThreshold = vThreshold
