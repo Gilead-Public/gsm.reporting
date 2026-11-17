@@ -34,5 +34,7 @@ A data frame.
 
 Used to stack results (e.g. \code{dfSummary}) from a list of analysis pipeline
 output formatted like the result of \code{\link[workr:RunWorkflows]{workr::RunWorkflows()}}. Also adds study
-level metadata when provided.
+level metadata when provided. Metrics that do not contain \code{strName} are
+skipped and listed in an info-level log message; if none do, a zero-row
+data frame with the metadata columns is returned.
 }
