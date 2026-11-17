@@ -6978,7 +6978,8 @@ The same steps run automatically through the YAML workflows in
 `inst/workflow/3_reporting`. Supply `Reporting_Results_Longitudinal` to
 include changes from earlier snapshots; without it,
 [`CalculateChange()`](https://gilead-public.github.io/gsm.reporting/dev/reference/CalculateChange.md)
-logs a message and returns `Reporting_Results` without change columns.
+logs a message and returns the standard columns, with previous-snapshot
+and change values set to `NA`.
 
 ``` r
 
