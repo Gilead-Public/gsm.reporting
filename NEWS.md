@@ -1,6 +1,7 @@
 # gsm.reporting (development version)
 
 - `gsm.kri` is no longer a suggested dependency, which removes the circular dependency between `gsm.reporting` and `gsm.kri`.
+- New `Distributions` reporting workflow (`inst/workflow/3_reporting/Distributions.yaml`) stacks the `Analysis_Distributions` of every metric that defines one into a new `Reporting_Distributions` table. Metrics without distributions are skipped; if none define them, `Reporting_Distributions` is an empty data frame (#87).
 
 # gsm.reporting v1.1.8
 
