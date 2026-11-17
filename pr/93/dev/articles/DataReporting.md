@@ -1,0 +1,7022 @@
+# Reporting Data Model
+
+``` r
+
+library(gsm.reporting)
+library(dplyr)
+```
+
+## Introduction
+
+The `{gsm}` suite of packages monitors clinical trials with Key Risk
+Indicators (KRIs).
+[gsm.reporting](https://gilead-public.github.io/gsm.reporting/) sits
+between analysis and reporting: it takes the output of metric workflows
+and produces the four tables of the reporting data model.
+
+![](data_model_detailed.png)
+
+| Table | Function | Contents |
+|----|----|----|
+| `Reporting_Groups` | [`dplyr::bind_rows()`](https://dplyr.tidyverse.org/reference/bind_rows.html) | Long-format metadata for each study, site, and country |
+| `Reporting_Metrics` | [`MakeMetric()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeMetric.md) | One row of metadata per metric |
+| `Reporting_Results` | [`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md), [`CalculateChange()`](https://gilead-public.github.io/gsm.reporting/dev/reference/CalculateChange.md), [`FilterByLatestSnapshotDate()`](https://gilead-public.github.io/gsm.reporting/dev/reference/FilterByLatestSnapshotDate.md) | Stacked results for every metric and group |
+| `Reporting_Bounds` | [`MakeBounds()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeBounds.md) | Predicted bounds used to draw flag thresholds in charts |
+
+Each table has a YAML workflow in `inst/workflow/3_reporting`. This
+vignette builds each table step by step and then runs the workflows. The
+inputs are sample data from
+[gsm.core](https://gilead-public.github.io/gsm.core) and mapped data
+from [gsm.mapping](https://github.com/Gilead-Public/gsm.mapping).
+
+For the full pipeline, from metric calculation through charts and HTML
+reports, see the `{gsm.kri}` documentation.
+
+## Inputs
+
+The reporting workflows need three inputs:
+
+- `lWorkflows`: metric workflows, whose `meta` sections describe each
+  metric.
+- `lAnalyzed`: analysis output, with one element per metric containing
+  an `Analysis_Summary` data frame.
+- `Mapped_STUDY`, `Mapped_SITE`, `Mapped_COUNTRY`: group metadata from
+  [gsm.mapping](https://github.com/Gilead-Public/gsm.mapping).
+
+In practice, `lWorkflows` and `lAnalyzed` come from metric workflows
+such as those in `{gsm.kri}`. Here they are reconstructed from
+[gsm.core](https://gilead-public.github.io/gsm.core) sample data, so the
+vignette depends on no metric package.
+
+``` r
+
+lWorkflows <- gsm.core::reportingMetrics |>
+  select(-MetricID) |>
+  split(~ID) |>
+  purrr::map(\(meta) list(meta = as.list(meta)))
+
+dfLatest <- gsm.core::reportingResults |>
+  filter(SnapshotDate == max(SnapshotDate))
+
+lAnalyzed <- dfLatest |>
+  select(GroupID, GroupLevel, Numerator, Denominator, Metric, Score, Flag, MetricID) |>
+  split(~MetricID) |>
+  purrr::map(\(df) list(Analysis_Summary = select(df, -MetricID)))
+
+names(lAnalyzed)
+#>  [1] "Analysis_kri0001"   "Analysis_kri0002"   "Analysis_kri0003"  
+#>  [4] "Analysis_kri0004"   "Analysis_kri0005"   "Analysis_kri0006"  
+#>  [7] "Analysis_kri0007"   "Analysis_kri0007-2" "Analysis_kri0008"  
+#> [10] "Analysis_kri0009"   "Analysis_kri0010"   "Analysis_kri0011"  
+#> [13] "Analysis_kri0012"   "Analysis_kri0013"   "Analysis_kri0014"  
+#> [16] "Analysis_kri0015"   "Analysis_kri0019"   "Analysis_kri0020a" 
+#> [19] "Analysis_kri0020b"  "Analysis_kri0020c"  "Analysis_kri0020d" 
+#> [22] "Analysis_kri0020e"  "Analysis_kri0020f"  "Analysis_srs0001"
+```
+
+Group metadata comes from the
+[gsm.mapping](https://github.com/Gilead-Public/gsm.mapping) workflows:
+
+``` r
+
+mappings_wf <- workr::MakeWorkflowList(
+  strPath = "workflow/1_mappings",
+  strPackage = "gsm.mapping"
+)
+# These domains are not present in gsm.core::lSource
+mappings_wf <- mappings_wf[
+  setdiff(names(mappings_wf), c("AntiCancer", "Baseline", "Consents"))
+]
+lRaw <- gsm.mapping::Ingest(
+  gsm.core::lSource,
+  gsm.mapping::CombineSpecs(mappings_wf)
+)
+mapped <- workr::RunWorkflows(mappings_wf, lRaw)
+```
+
+## Step by step
+
+### Groups
+
+`Reporting_Groups` stacks the long-format study, site, and country
+metadata. Each row is one `Param`/`Value` pair for a group.
+
+``` r
+
+dfGroups <- bind_rows(
+  mapped$Mapped_STUDY,
+  mapped$Mapped_SITE,
+  mapped$Mapped_COUNTRY
+)
+dfGroups
+#> # A tibble: 1,661 × 4
+#>    GroupID        Param          Value            GroupLevel
+#>    <chr>          <chr>          <chr>            <chr>     
+#>  1 AA-AA-000-0000 studyid        AA-AA-000-0000   Study     
+#>  2 AA-AA-000-0000 nickname       OAK-99           Study     
+#>  3 AA-AA-000-0000 protocol_title Protocol Title L Study     
+#>  4 AA-AA-000-0000 status         Active           Study     
+#>  5 AA-AA-000-0000 num_plan_site  150              Study     
+#>  6 AA-AA-000-0000 num_plan_subj  1000             Study     
+#>  7 AA-AA-000-0000 act_fpfv       2012-02-11       Study     
+#>  8 AA-AA-000-0000 est_fpfv       2012-02-22       Study     
+#>  9 AA-AA-000-0000 est_lplv       2012-05-29       Study     
+#> 10 AA-AA-000-0000 est_lpfv       2012-04-05       Study     
+#> # ℹ 1,651 more rows
+```
+
+### Metrics
+
+[`MakeMetric()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeMetric.md)
+collects the `meta` section of each workflow into one row per metric and
+adds `MetricID` (`{Type}_{ID}`).
+
+``` r
+
+dfMetrics <- MakeMetric(lWorkflows)
+dfMetrics |>
+  select(MetricID, Abbreviation, Metric, Model, Threshold)
+#> # A tibble: 24 × 5
+#>    MetricID           Abbreviation Metric                        Model Threshold
+#>    <chr>              <chr>        <chr>                         <chr> <chr>    
+#>  1 Analysis_kri0001   AE           Adverse Event Rate            Norm… -2,-1,2,3
+#>  2 Analysis_kri0002   SAE          Serious Adverse Event Rate    Norm… -2,-1,2,3
+#>  3 Analysis_kri0003   PD           Non-Important Protocol Devia… Norm… -3,-2,2,3
+#>  4 Analysis_kri0004   IPD          Important Protocol Deviation… Norm… -3,-2,2,3
+#>  5 Analysis_kri0005   LB           Grade 3+ Lab Abnormality Rate Norm… 2,3      
+#>  6 Analysis_kri0006   SDSC         Study Discontinuation Rate    Norm… 2,3      
+#>  7 Analysis_kri0007   TDSC         Treatment Discontinuation Ra… Norm… 2,3      
+#>  8 Analysis_kri0007-2 PTDC         Premature Treatment Disconti… Norm… 2,3      
+#>  9 Analysis_kri0008   QRY          Query Rate                    Norm… 2,3      
+#> 10 Analysis_kri0009   OQRY         Delayed Query Resolution Rate Norm… 2,3      
+#> # ℹ 14 more rows
+```
+
+### Results
+
+[`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md)
+stacks the `Analysis_Summary` of each metric. It adds `MetricID` from
+the list names, along with the snapshot date and study ID.
+
+``` r
+
+dfResults <- BindResults(
+  lAnalysis = lAnalyzed,
+  strName = "Analysis_Summary",
+  dSnapshotDate = max(dfLatest$SnapshotDate),
+  strStudyID = unique(dfLatest$StudyID)
+)
+dfResults
+#>      GroupID GroupLevel Numerator Denominator       Metric        Score Flag
+#> 1      0X002       Site         0          16 0.000000e+00           NA   NA
+#> 2      0X012       Site         0          10 0.000000e+00           NA   NA
+#> 3      0X094       Site         2          52 3.846154e-02 -0.610564789    0
+#> 4     0X1010       Site        17         205 8.292683e-02  0.059383272    0
+#> 5     0X1211       Site         3          19 1.578947e-01           NA   NA
+#> 6     0X1259       Site         1           6 1.666667e-01           NA   NA
+#> 7     0X1274       Site        12         195 6.153846e-02 -0.538668980    0
+#> 8     0X1275       Site         5          71 7.042254e-02 -0.175510895    0
+#> 9     0X1284       Site        27         458 5.895197e-02 -0.936104878    0
+#> 10    0X1347       Site        27         375 7.200000e-02 -0.342340538    0
+#> 11    0X1391       Site         4          17 2.352941e-01           NA   NA
+#> 12    0X1437       Site        41         450 9.111111e-02  0.434770496    0
+#> 13    0X1469       Site         3          33 9.090909e-02  0.115418320    0
+#> 14     0X161       Site         5          61 8.196721e-02  0.017422429    0
+#> 15    0X1637       Site         1          30 3.333333e-02 -0.519862557    0
+#> 16    0X1662       Site         6          54 1.111111e-01  0.444174285    0
+#> 17    0X1675       Site        20         246 8.130081e-02  0.014109774    0
+#> 18    0X1834       Site         1          55 1.818182e-02 -0.928345030    0
+#> 19    0X1967       Site        16         188 8.510638e-02  0.116560902    0
+#> 20    0X2116       Site        18         243 7.407407e-02 -0.210997731    0
+#> 21    0X2193       Site         3          21 1.428571e-01           NA   NA
+#> 22    0X2226       Site         3          46 6.521739e-02 -0.211787575    0
+#> 23    0X2516       Site        26         389 6.683805e-02 -0.552032956    0
+#> 24     0X259       Site        32         374 8.556150e-02  0.181983638    0
+#> 25    0X2615       Site         4          19 2.105263e-01           NA   NA
+#> 26    0X2628       Site        45         584 7.705479e-02 -0.183218680    0
+#> 27    0X2659       Site         1          46 2.173913e-02 -0.800806195    0
+#> 28    0X2675       Site        16         167 9.580838e-02  0.386107401    0
+#> 29    0X2714       Site         5          37 1.351351e-01  0.659562913    0
+#> 30    0X2725       Site         5          69 7.246377e-02 -0.139152824    0
+#> 31    0X2775       Site        46         495 9.292929e-02  0.536792351    0
+#> 32    0X2801       Site        70         797 8.782936e-02  0.393545973    0
+#> 33    0X2813       Site         9         178 5.056180e-02 -0.807175029    0
+#> 34    0X2831       Site         0          17 0.000000e+00           NA   NA
+#> 35    0X2861       Site         6         165 3.636364e-02 -1.141434767   -1
+#> 36    0X2908       Site        12          60 2.000000e-01  1.843512218    0
+#> 37    0X3017       Site        44         560 7.857143e-02 -0.107725378    0
+#> 38    0X3072       Site         5          37 1.351351e-01  0.659562913    0
+#> 39    0X3250       Site         4          37 1.081081e-01  0.331182623    0
+#> 40    0X3346       Site         9          50 1.800000e-01  1.400405305    0
+#> 41    0X3423       Site         5          19 2.631579e-01           NA   NA
+#> 42    0X3598       Site         6         106 5.660377e-02 -0.498635131    0
+#> 43    0X3599       Site        50         560 8.928571e-02  0.398722996    0
+#> 44    0X3686       Site         5          24 2.083333e-01           NA   NA
+#> 45    0X3833       Site         2          27 7.407407e-02           NA   NA
+#> 46    0X3869       Site        33         488 6.762295e-02 -0.583667075    0
+#> 47    0X3939       Site         4          12 3.333333e-01           NA   NA
+#> 48    0X4009       Site        20         209 9.569378e-02  0.428630219    0
+#> 49    0X4050       Site         0          24 0.000000e+00           NA   NA
+#> 50     0X412       Site        72         760 9.473684e-02  0.764670873    0
+#> 51    0X4273       Site        22         225 9.777778e-02  0.507175098    0
+#> 52    0X4334       Site        29         365 7.945205e-02 -0.053364260    0
+#> 53    0X4349       Site        28         383 7.310705e-02 -0.302697169    0
+#> 54    0X4352       Site         1          26 3.846154e-02           NA   NA
+#> 55    0X4487       Site         4          61 6.557377e-02 -0.238326031    0
+#> 56    0X4618       Site        63         806 7.816377e-02 -0.152355854    0
+#> 57    0X4697       Site        18         281 6.405694e-02 -0.562305429    0
+#> 58    0X4747       Site         5         151 3.311258e-02 -1.171734772   -1
+#> 59    0X4766       Site         1          10 1.000000e-01           NA   NA
+#> 60    0X4903       Site        32         404 7.920792e-02 -0.065944485    0
+#> 61    0X4908       Site         1          32 3.125000e-02 -0.560452024    0
+#> 62    0X4934       Site        23         322 7.142857e-02 -0.337709141    0
+#> 63    0X5070       Site         0          14 0.000000e+00           NA   NA
+#> 64    0X5089       Site         3          20 1.500000e-01           NA   NA
+#> 65    0X5132       Site         0          13 0.000000e+00           NA   NA
+#> 66    0X5391       Site         1           5 2.000000e-01           NA   NA
+#> 67    0X5551       Site        37         479 7.724426e-02 -0.157649633    0
+#> 68    0X5616       Site        19         249 7.630522e-02 -0.143262401    0
+#> 69    0X5873       Site        60         560 1.071429e-01  1.242803618    0
+#> 70    0X5886       Site        20         313 6.389776e-02 -0.599084836    0
+#> 71    0X5900       Site        29         427 6.791569e-02 -0.533887577    0
+#> 72    0X5993       Site        36         388 9.278351e-02  0.469511140    0
+#> 73    0X6051       Site        13         154 8.441558e-02  0.088372208    0
+#> 74    0X6269       Site         1           5 2.000000e-01           NA   NA
+#> 75    0X6284       Site         2          26 7.692308e-02           NA   NA
+#> 76    0X6289       Site        31         389 7.969152e-02 -0.045656917    0
+#> 77    0X6321       Site         5         111 4.504505e-02 -0.753508012    0
+#> 78    0X6394       Site         3          27 1.111111e-01           NA   NA
+#> 79    0X6450       Site         0           8 0.000000e+00           NA   NA
+#> 80    0X6457       Site         4          28 1.428571e-01           NA   NA
+#> 81    0X6480       Site        11         121 9.090909e-02  0.221009256    0
+#> 82    0X6488       Site         8          67 1.194030e-01  0.630330649    0
+#> 83    0X6501       Site         7         166 4.216867e-02 -0.995493086    0
+#> 84    0X6505       Site         9         158 5.696203e-02 -0.599782480    0
+#> 85     0X652       Site         6          43 1.395349e-01  0.768661591    0
+#> 86    0X6562       Site         4          29 1.379310e-01           NA   NA
+#> 87    0X6567       Site         2          47 4.255319e-02 -0.524438323    0
+#> 88    0X6569       Site         7          35 2.000000e-01  1.408005714    0
+#> 89    0X6580       Site         6          37 1.621622e-01  0.987943203    0
+#> 90     0X664       Site        31         290 1.068966e-01  0.885971762    0
+#> 91    0X6699       Site         8         115 6.956522e-02 -0.241733537    0
+#> 92    0X6711       Site        20         264 7.575758e-02 -0.165288186    0
+#> 93    0X6747       Site        66         652 1.012270e-01  1.039279898    0
+#> 94    0X6846       Site         9         132 6.818182e-02 -0.290732915    0
+#> 95    0X6938       Site         9          55 1.636364e-01  1.226353851    0
+#> 96    0X6995       Site        13         306 4.248366e-02 -1.340583846   -1
+#> 97     0X700       Site         0          50 0.000000e+00 -1.141945353   -1
+#> 98    0X7081       Site        63         609 1.034483e-01  1.113918672    0
+#> 99    0X7203       Site         0          21 0.000000e+00           NA   NA
+#> 100   0X7218       Site         3          43 6.976744e-02 -0.145167482    0
+#> 101   0X7225       Site        28         445 6.292135e-02 -0.755468190    0
+#> 102   0X7261       Site        53         594 8.922559e-02  0.407721711    0
+#> 103   0X7377       Site        11          92 1.195652e-01  0.741734790    0
+#> 104   0X7420       Site         6          39 1.538462e-01  0.910558014    0
+#> 105   0X7561       Site         5          66 7.575758e-02 -0.082644093    0
+#> 106   0X7633       Site        31         429 7.226107e-02 -0.355359289    0
+#> 107   0X7680       Site        37         485 7.628866e-02 -0.200670232    0
+#> 108   0X7772       Site        24         367 6.539510e-02 -0.591411283    0
+#> 109    0X781       Site         2          41 4.878049e-02 -0.410174025    0
+#> 110   0X7858       Site        23         268 8.582090e-02  0.162533067    0
+#> 111   0X7871       Site         4          36 1.111111e-01  0.362666785    0
+#> 112   0X7893       Site        42         488 8.606557e-02  0.230119540    0
+#> 113   0X7965       Site         3           1 3.000000e+00           NA   NA
+#> 114    0X800       Site        42         423 9.929078e-02  0.757560128    0
+#> 115   0X8015       Site         4          11 3.636364e-01           NA   NA
+#> 116   0X8090       Site        16         318 5.031447e-02 -1.087685295   -1
+#> 117   0X8487       Site         6          16 3.750000e-01           NA   NA
+#> 118   0X8500       Site         7          42 1.666667e-01  1.110892450    0
+#> 119   0X8519       Site         3          67 4.477612e-02 -0.589811829    0
+#> 120   0X8543       Site         3          57 5.263158e-02 -0.425554138    0
+#> 121   0X8553       Site        10         126 7.936508e-02 -0.033303852    0
+#> 122   0X8568       Site        16         182 8.791209e-02  0.190291697    0
+#> 123   0X8630       Site         7          64 1.093750e-01  0.455813223    0
+#> 124   0X8702       Site         3          36 8.333333e-02  0.029756898    0
+#> 125   0X9048       Site         2          46 4.347826e-02 -0.506296885    0
+#> 126   0X9121       Site         4          39 1.025641e-01  0.270859067    0
+#> 127   0X9166       Site        43         400 1.075000e-01  1.064628332    0
+#> 128   0X9201       Site        12         239 5.020921e-02 -0.946200400    0
+#> 129   0X9208       Site         7          95 7.368421e-02 -0.139518025    0
+#> 130   0X9242       Site         4          12 3.333333e-01           NA   NA
+#> 131   0X9252       Site        33         554 5.956679e-02 -1.000642511   -1
+#> 132   0X9280       Site        10         172 5.813953e-02 -0.594944654    0
+#> 133   0X9377       Site        36         563 6.394316e-02 -0.801319638    0
+#> 134   0X9392       Site        51         534 9.550562e-02  0.676456286    0
+#> 135   0X9427       Site         2          24 8.333333e-02           NA   NA
+#> 136   0X9450       Site         2          50 4.000000e-02 -0.576978540    0
+#> 137   0X9490       Site        25         532 4.699248e-02 -1.559891900   -1
+#> 138   0X9544       Site         6          92 6.521739e-02 -0.299512861    0
+#> 139   0X9570       Site         4           2 2.000000e+00           NA   NA
+#> 140   0X9766       Site        12         125 9.600000e-02  0.338324178    0
+#> 141    0X999       Site        35         331 1.057402e-01  0.904507896    0
+#> 142    0X002       Site         0          16 0.000000e+00           NA   NA
+#> 143    0X012       Site         0          10 0.000000e+00           NA   NA
+#> 144    0X094       Site         0          52 0.000000e+00 -0.588203417    0
+#> 145   0X1010       Site         5         205 2.439024e-02  1.123226209    0
+#> 146   0X1211       Site         0          19 0.000000e+00           NA   NA
+#> 147   0X1259       Site         0           6 0.000000e+00           NA   NA
+#> 148   0X1274       Site         2         195 1.025641e-02 -0.199398735    0
+#> 149   0X1275       Site         1          71 1.408451e-02  0.091305788    0
+#> 150   0X1284       Site         7         458 1.528384e-02  0.400295140    0
+#> 151   0X1347       Site         4         375 1.066667e-02 -0.224393764    0
+#> 152   0X1391       Site         0          17 0.000000e+00           NA   NA
+#> 153   0X1437       Site         7         450 1.555556e-02  0.434599292    0
+#> 154   0X1469       Site         0          33 0.000000e+00 -0.468579021    0
+#> 155    0X161       Site         0          61 0.000000e+00 -0.637075331    0
+#> 156   0X1637       Site         0          30 0.000000e+00 -0.446772567    0
+#> 157   0X1662       Site         1          54 1.851852e-02  0.293398736    0
+#> 158   0X1675       Site         4         246 1.626016e-02  0.393834465    0
+#> 159   0X1834       Site         1          55 1.818182e-02  0.279720459    0
+#> 160   0X1967       Site         1         188 5.319149e-03 -0.639926701    0
+#> 161   0X2116       Site         0         243 0.000000e+00 -1.271537017   -1
+#> 162   0X2193       Site         2          21 9.523810e-02           NA   NA
+#> 163   0X2226       Site         1          46 2.173913e-02  0.414103220    0
+#> 164   0X2516       Site         1         389 2.570694e-03 -1.276150875   -1
+#> 165    0X259       Site         4         374 1.069519e-02 -0.220475715    0
+#> 166   0X2615       Site         0          19 0.000000e+00           NA   NA
+#> 167   0X2628       Site         3         584 5.136986e-03 -1.156748116   -1
+#> 168   0X2659       Site         0          46 0.000000e+00 -0.553228808    0
+#> 169   0X2675       Site         4         167 2.395210e-02  0.976643392    0
+#> 170   0X2714       Site         0          37 0.000000e+00 -0.496165694    0
+#> 171   0X2725       Site         0          69 0.000000e+00 -0.677564145    0
+#> 172   0X2775       Site         7         495 1.414141e-02  0.249392462    0
+#> 173   0X2801       Site        11         797 1.380176e-02  0.253542727    0
+#> 174   0X2813       Site         3         178 1.685393e-02  0.386982353    0
+#> 175   0X2831       Site         0          17 0.000000e+00           NA   NA
+#> 176   0X2861       Site         0         165 0.000000e+00 -1.047774545   -1
+#> 177   0X2908       Site         4          60 6.666667e-02  2.756132665    1
+#> 178   0X3017       Site         7         560 1.250000e-02  0.010422360    0
+#> 179   0X3072       Site         1          37 2.702703e-02  0.582417431    0
+#> 180   0X3250       Site         2          37 5.405405e-02  1.661000556    0
+#> 181   0X3346       Site         0          50 0.000000e+00 -0.576780904    0
+#> 182   0X3423       Site         1          19 5.263158e-02           NA   NA
+#> 183   0X3598       Site         2         106 1.886792e-02  0.434669990    0
+#> 184   0X3599       Site        11         560 1.964286e-02  1.119394054    0
+#> 185   0X3686       Site         1          24 4.166667e-02           NA   NA
+#> 186   0X3833       Site         0          27 0.000000e+00           NA   NA
+#> 187   0X3869       Site         3         488 6.147541e-03 -0.910945513    0
+#> 188   0X3939       Site         0          12 0.000000e+00           NA   NA
+#> 189   0X4009       Site         2         209 9.569378e-03 -0.271596132    0
+#> 190   0X4050       Site         0          24 0.000000e+00           NA   NA
+#> 191    0X412       Site         7         760 9.210526e-03 -0.582818219    0
+#> 192   0X4273       Site         4         225 1.777778e-02  0.526000274    0
+#> 193   0X4334       Site         3         365 8.219178e-03 -0.528157779    0
+#> 194   0X4349       Site         3         383 7.832898e-03 -0.590621196    0
+#> 195   0X4352       Site         0          26 0.000000e+00           NA   NA
+#> 196   0X4487       Site         0          61 0.000000e+00 -0.637075331    0
+#> 197   0X4618       Site        11         806 1.364764e-02  0.226264839    0
+#> 198   0X4697       Site         1         281 3.558719e-03 -0.975965481    0
+#> 199   0X4747       Site         0         151 0.000000e+00 -1.002338345   -1
+#> 200   0X4766       Site         1          10 1.000000e-01           NA   NA
+#> 201   0X4903       Site         7         404 1.732673e-02  0.645352441    0
+#> 202   0X4908       Site         0          32 0.000000e+00 -0.461424723    0
+#> 203   0X4934       Site         3         322 9.316770e-03 -0.366854423    0
+#> 204   0X5070       Site         0          14 0.000000e+00           NA   NA
+#> 205   0X5089       Site         0          20 0.000000e+00           NA   NA
+#> 206   0X5132       Site         0          13 0.000000e+00           NA   NA
+#> 207   0X5391       Site         1           5 2.000000e-01           NA   NA
+#> 208   0X5551       Site         5         479 1.043841e-02 -0.286382719    0
+#> 209   0X5616       Site         3         249 1.204819e-02 -0.039824513    0
+#> 210   0X5873       Site         6         560 1.071429e-02 -0.266820564    0
+#> 211   0X5886       Site         3         313 9.584665e-03 -0.330596267    0
+#> 212   0X5900       Site         3         427 7.025761e-03 -0.733049875    0
+#> 213   0X5993       Site         8         388 2.061856e-02  1.057853365    0
+#> 214   0X6051       Site         1         154 6.493506e-03 -0.483564867    0
+#> 215   0X6269       Site         0           5 0.000000e+00           NA   NA
+#> 216   0X6284       Site         1          26 3.846154e-02           NA   NA
+#> 217   0X6289       Site         8         389 2.056555e-02  1.052357062    0
+#> 218   0X6321       Site         0         111 0.000000e+00 -0.859384191    0
+#> 219   0X6394       Site         1          27 3.703704e-02           NA   NA
+#> 220   0X6450       Site         0           8 0.000000e+00           NA   NA
+#> 221   0X6457       Site         0          28 0.000000e+00           NA   NA
+#> 222   0X6480       Site         2         121 1.652893e-02  0.295605853    0
+#> 223   0X6488       Site         1          67 1.492537e-02  0.133852850    0
+#> 224   0X6501       Site         0         166 0.000000e+00 -1.050944823   -1
+#> 225   0X6505       Site         1         158 6.329114e-03 -0.503361722    0
+#> 226    0X652       Site         2          43 4.651163e-02  1.466129966    0
+#> 227   0X6562       Site         2          29 6.896552e-02           NA   NA
+#> 228   0X6567       Site         0          47 0.000000e+00 -0.559209834    0
+#> 229   0X6569       Site         2          35 5.714286e-02  1.735373862    0
+#> 230   0X6580       Site         1          37 2.702703e-02  0.582417431    0
+#> 231    0X664       Site         3         290 1.034483e-02 -0.233288198    0
+#> 232   0X6699       Site         0         115 0.000000e+00 -0.874731550    0
+#> 233   0X6711       Site         4         264 1.515152e-02  0.289807082    0
+#> 234   0X6747       Site         5         652 7.668712e-03 -0.798113131    0
+#> 235   0X6846       Site         1         132 7.575758e-03 -0.366116745    0
+#> 236   0X6938       Site         1          55 1.818182e-02  0.279720459    0
+#> 237   0X6995       Site         2         306 6.535948e-03 -0.676769208    0
+#> 238    0X700       Site         0          50 0.000000e+00 -0.576780904    0
+#> 239   0X7081       Site        11         609 1.806240e-02  0.911454673    0
+#> 240   0X7203       Site         0          21 0.000000e+00           NA   NA
+#> 241   0X7218       Site         0          43 0.000000e+00 -0.534884606    0
+#> 242   0X7225       Site         4         445 8.988764e-03 -0.476662487    0
+#> 243   0X7261       Site         9         594 1.515152e-02  0.434710624    0
+#> 244   0X7377       Site         1          92 1.086957e-02 -0.098376647    0
+#> 245   0X7420       Site         0          39 0.000000e+00 -0.509399102    0
+#> 246   0X7561       Site         2          66 3.030303e-02  0.952477889    0
+#> 247   0X7633       Site         5         429 1.165501e-02 -0.105702088    0
+#> 248   0X7680       Site         8         485 1.649485e-02  0.586898031    0
+#> 249   0X7772       Site         1         367 2.724796e-03 -1.220170732   -1
+#> 250    0X781       Site         2          41 4.878049e-02  1.526941386    0
+#> 251   0X7858       Site         4         268 1.492537e-02  0.267705700    0
+#> 252   0X7871       Site         0          36 0.000000e+00 -0.489414826    0
+#> 253   0X7893       Site         6         488 1.229508e-02 -0.019969880    0
+#> 254   0X7965       Site         1           1 1.000000e+00           NA   NA
+#> 255    0X800       Site         5         423 1.182033e-02 -0.082652945    0
+#> 256   0X8015       Site         1          11 9.090909e-02           NA   NA
+#> 257   0X8090       Site         3         318 9.433962e-03 -0.350857793    0
+#> 258   0X8487       Site         1          16 6.250000e-02           NA   NA
+#> 259   0X8500       Site         1          42 2.380952e-02  0.483719591    0
+#> 260   0X8519       Site         1          67 1.492537e-02  0.133852850    0
+#> 261   0X8543       Site         1          57 1.754386e-02  0.253161071    0
+#> 262   0X8553       Site         3         126 2.380952e-02  0.837826908    0
+#> 263   0X8568       Site         3         182 1.648352e-02  0.358520947    0
+#> 264   0X8630       Site         1          64 1.562500e-02  0.167542526    0
+#> 265   0X8702       Site         0          36 0.000000e+00 -0.489414826    0
+#> 266   0X9048       Site         0          46 0.000000e+00 -0.553228808    0
+#> 267   0X9121       Site         2          39 5.128205e-02  1.591727279    0
+#> 268   0X9166       Site        12         400 3.000000e-02  2.305076259    1
+#> 269   0X9201       Site         3         239 1.255230e-02  0.012113564    0
+#> 270   0X9208       Site         1          95 1.052632e-02 -0.121917321    0
+#> 271   0X9242       Site         0          12 0.000000e+00           NA   NA
+#> 272   0X9252       Site         7         554 1.263538e-02  0.031271890    0
+#> 273   0X9280       Site         3         172 1.744186e-02  0.430991717    0
+#> 274   0X9377       Site         5         563 8.880995e-03 -0.552925192    0
+#> 275   0X9392       Site         7         534 1.310861e-02  0.102448959    0
+#> 276   0X9427       Site         0          24 0.000000e+00           NA   NA
+#> 277   0X9450       Site         0          50 0.000000e+00 -0.576780904    0
+#> 278   0X9490       Site         3         532 5.639098e-03 -1.028066659   -1
+#> 279   0X9544       Site         0          92 0.000000e+00 -0.782383684    0
+#> 280   0X9570       Site         0           2 0.000000e+00           NA   NA
+#> 281   0X9766       Site         1         125 8.000000e-03 -0.325158021    0
+#> 282    0X999       Site        10         331 3.021148e-02  2.122102201    1
+#> 283    0X002       Site         0          16 0.000000e+00           NA   NA
+#> 284    0X012       Site         2          10 2.000000e-01           NA   NA
+#> 285    0X094       Site         3          52 5.769231e-02  0.390743319    0
+#> 286   0X1010       Site        11         205 5.365854e-02  0.580436125    0
+#> 287   0X1211       Site         2          19 1.052632e-01           NA   NA
+#> 288   0X1259       Site         0           6 0.000000e+00           NA   NA
+#> 289   0X1274       Site         9         195 4.615385e-02  0.211555130    0
+#> 290   0X1275       Site         0          71 0.000000e+00 -1.188057693    0
+#> 291   0X1284       Site        10         458 2.183406e-02 -1.436605740    0
+#> 292   0X1347       Site        13         375 3.466667e-02 -0.459206040    0
+#> 293   0X1391       Site         1          17 5.882353e-02           NA   NA
+#> 294   0X1437       Site        24         450 5.333333e-02  0.836631767    0
+#> 295   0X1469       Site         3          33 9.090909e-02  0.956839386    0
+#> 296    0X161       Site         4          61 6.557377e-02  0.631463947    0
+#> 297   0X1637       Site         1          30 3.333333e-02 -0.154590259    0
+#> 298   0X1662       Site         9          54 1.666667e-01  3.107411016    2
+#> 299   0X1675       Site         7         246 2.845528e-02 -0.701522745    0
+#> 300   0X1834       Site         1          55 1.818182e-02 -0.589471604    0
+#> 301   0X1967       Site         6         188 3.191489e-02 -0.452788737    0
+#> 302   0X2116       Site         5         243 2.057613e-02 -1.112765909    0
+#> 303   0X2193       Site         0          21 0.000000e+00           NA   NA
+#> 304   0X2226       Site         5          46 1.086957e-01  1.537820816    0
+#> 305   0X2516       Site        26         389 6.683805e-02  1.678985279    0
+#> 306    0X259       Site        14         374 3.743316e-02 -0.277589255    0
+#> 307   0X2615       Site         0          19 0.000000e+00           NA   NA
+#> 308   0X2628       Site        33         584 5.650685e-02  1.212551601    0
+#> 309   0X2659       Site         0          46 0.000000e+00 -0.956284843    0
+#> 310   0X2675       Site         4         167 2.395210e-02 -0.774886369    0
+#> 311   0X2714       Site         1          37 2.702703e-02 -0.301458633    0
+#> 312   0X2725       Site         2          69 2.898551e-02 -0.356633460    0
+#> 313   0X2775       Site        25         495 5.050505e-02  0.664579774    0
+#> 314   0X2801       Site        25         797 3.136763e-02 -0.984548664    0
+#> 315   0X2813       Site        10         178 5.617978e-02  0.654664720    0
+#> 316   0X2831       Site         1          17 5.882353e-02           NA   NA
+#> 317   0X2861       Site         6         165 3.636364e-02 -0.230856598    0
+#> 318   0X2908       Site         5          60 8.333333e-02  1.091672279    0
+#> 319   0X3017       Site        24         560 4.285714e-02  0.094573776    0
+#> 320   0X3072       Site         0          37 0.000000e+00 -0.857648275    0
+#> 321   0X3250       Site         2          37 5.405405e-02  0.254731010    0
+#> 322   0X3346       Site         5          50 1.000000e-01  1.395266239    0
+#> 323   0X3423       Site         3          19 1.578947e-01           NA   NA
+#> 324   0X3598       Site         4         106 3.773585e-02 -0.137238007    0
+#> 325   0X3599       Site        22         560 3.928571e-02 -0.191356236    0
+#> 326   0X3686       Site         2          24 8.333333e-02           NA   NA
+#> 327   0X3833       Site         2          27 7.407407e-02           NA   NA
+#> 328   0X3869       Site        23         488 4.713115e-02  0.407709763    0
+#> 329   0X3939       Site         1          12 8.333333e-02           NA   NA
+#> 330   0X4009       Site         6         209 2.870813e-02 -0.634250495    0
+#> 331   0X4050       Site         0          24 0.000000e+00           NA   NA
+#> 332    0X412       Site        30         760 3.947368e-02 -0.205391775    0
+#> 333   0X4273       Site        16         225 7.111111e-02  1.493766534    0
+#> 334   0X4334       Site        15         365 4.109589e-02 -0.037486711    0
+#> 335   0X4349       Site        21         383 5.483029e-02  0.870953569    0
+#> 336   0X4352       Site         1          26 3.846154e-02           NA   NA
+#> 337   0X4487       Site         2          61 3.278689e-02 -0.234876991    0
+#> 338   0X4618       Site        33         806 4.094293e-02 -0.070397375    0
+#> 339   0X4697       Site        15         281 5.338078e-02  0.663812432    0
+#> 340   0X4747       Site         1         151 6.622517e-03 -1.457275665    0
+#> 341   0X4766       Site         1          10 1.000000e-01           NA   NA
+#> 342   0X4903       Site        21         404 5.198020e-02  0.700703731    0
+#> 343   0X4908       Site         3          32 9.375000e-02  0.996599886    0
+#> 344   0X4934       Site         9         322 2.795031e-02 -0.833261882    0
+#> 345   0X5070       Site         1          14 7.142857e-02           NA   NA
+#> 346   0X5089       Site         1          20 5.000000e-02           NA   NA
+#> 347   0X5132       Site         1          13 7.692308e-02           NA   NA
+#> 348   0X5391       Site         2           5 4.000000e-01           NA   NA
+#> 349   0X5551       Site        17         479 3.549061e-02 -0.457982914    0
+#> 350   0X5616       Site        13         249 5.220884e-02  0.562308170    0
+#> 351   0X5873       Site        31         560 5.535714e-02  1.095328815    0
+#> 352   0X5886       Site         7         313 2.236422e-02 -1.155886535    0
+#> 353   0X5900       Site        16         427 3.747073e-02 -0.293980012    0
+#> 354   0X5993       Site        22         388 5.670103e-02  1.001287902    0
+#> 355   0X6051       Site         6         154 3.896104e-02 -0.113979235    0
+#> 356   0X6269       Site         2           5 4.000000e-01           NA   NA
+#> 357   0X6284       Site         1          26 3.846154e-02           NA   NA
+#> 358   0X6289       Site        13         389 3.341902e-02 -0.550950269    0
+#> 359   0X6321       Site         3         111 2.702703e-02 -0.522141668    0
+#> 360   0X6394       Site         2          27 7.407407e-02           NA   NA
+#> 361   0X6450       Site         0           8 0.000000e+00           NA   NA
+#> 362   0X6457       Site         4          28 1.428571e-01           NA   NA
+#> 363   0X6480       Site         9         121 7.438017e-02  1.217086200    0
+#> 364   0X6488       Site         4          67 5.970149e-02  0.499173604    0
+#> 365   0X6501       Site         9         166 5.421687e-02  0.546650992    0
+#> 366   0X6505       Site         5         158 3.164557e-02 -0.426546046    0
+#> 367    0X652       Site         2          43 4.651163e-02  0.107281097    0
+#> 368   0X6562       Site         2          29 6.896552e-02           NA   NA
+#> 369   0X6567       Site         0          47 0.000000e+00 -0.966623358    0
+#> 370   0X6569       Site         2          35 5.714286e-02  0.309573455    0
+#> 371   0X6580       Site         0          37 0.000000e+00 -0.857648275    0
+#> 372    0X664       Site         5         290 1.724138e-02 -1.407751236    0
+#> 373   0X6699       Site         5         115 4.347826e-02  0.065391823    0
+#> 374   0X6711       Site        17         264 6.439394e-02  1.248812641    0
+#> 375   0X6747       Site        19         652 2.914110e-02 -1.082838081    0
+#> 376   0X6846       Site         8         132 6.060606e-02  0.735810332    0
+#> 377   0X6938       Site         1          55 1.818182e-02 -0.589471604    0
+#> 378   0X6995       Site        10         306 3.267974e-02 -0.532402279    0
+#> 379    0X700       Site         4          50 8.000000e-02  0.916813818    0
+#> 380   0X7081       Site        29         609 4.761905e-02  0.496194171    0
+#> 381   0X7203       Site         0          21 0.000000e+00           NA   NA
+#> 382   0X7218       Site         0          43 0.000000e+00 -0.924575933    0
+#> 383   0X7225       Site        13         445 2.921348e-02 -0.889415583    0
+#> 384   0X7261       Site        29         594 4.882155e-02  0.589197540    0
+#> 385   0X7377       Site         6          92 6.521739e-02  0.763927834    0
+#> 386   0X7420       Site         1          39 2.564103e-02 -0.338782221    0
+#> 387   0X7561       Site         1          66 1.515152e-02 -0.729021665    0
+#> 388   0X7633       Site        17         429 3.962704e-02 -0.143567731    0
+#> 389   0X7680       Site        22         485 4.536082e-02  0.274553928    0
+#> 390   0X7772       Site        13         367 3.542234e-02 -0.405304366    0
+#> 391    0X781       Site         0          41 0.000000e+00 -0.902818157    0
+#> 392   0X7858       Site        10         268 3.731343e-02 -0.241612613    0
+#> 393   0X7871       Site         3          36 8.333333e-02  0.845605712    0
+#> 394   0X7893       Site        22         488 4.508197e-02  0.254560875    0
+#> 395   0X7965       Site         1           1 1.000000e+00           NA   NA
+#> 396    0X800       Site        18         423 4.255319e-02  0.061045884    0
+#> 397   0X8015       Site         2          11 1.818182e-01           NA   NA
+#> 398   0X8090       Site         9         318 2.830189e-02 -0.806859379    0
+#> 399   0X8487       Site         1          16 6.250000e-02           NA   NA
+#> 400   0X8500       Site         1          42 2.380952e-02 -0.391727417    0
+#> 401   0X8519       Site         3          67 4.477612e-02  0.085853664    0
+#> 402   0X8543       Site         2          57 3.508772e-02 -0.168276791    0
+#> 403   0X8553       Site         1         126 7.936508e-03 -1.281285180    0
+#> 404   0X8568       Site         7         182 3.846154e-02 -0.146706420    0
+#> 405   0X8630       Site         2          64 3.125000e-02 -0.282179684    0
+#> 406   0X8702       Site         0          36 0.000000e+00 -0.845979047    0
+#> 407   0X9048       Site         0          46 0.000000e+00 -0.956284843    0
+#> 408   0X9121       Site         2          39 5.128205e-02  0.202958468    0
+#> 409   0X9166       Site        17         400 4.250000e-02  0.055763932    0
+#> 410   0X9201       Site         8         239 3.347280e-02 -0.429040764    0
+#> 411   0X9208       Site         8          95 8.421053e-02  1.402582984    0
+#> 412   0X9242       Site         3          12 2.500000e-01           NA   NA
+#> 413   0X9252       Site        18         554 3.249097e-02 -0.731395863    0
+#> 414   0X9280       Site         8         172 4.651163e-02  0.214562193    0
+#> 415   0X9377       Site        22         563 3.907638e-02 -0.208672608    0
+#> 416   0X9392       Site        21         534 3.932584e-02 -0.183724013    0
+#> 417   0X9427       Site         0          24 0.000000e+00           NA   NA
+#> 418   0X9450       Site         2          50 4.000000e-02 -0.040091025    0
+#> 419   0X9490       Site        15         532 2.819549e-02 -1.051917093    0
+#> 420   0X9544       Site         1          92 1.086957e-02 -0.999671190    0
+#> 421   0X9570       Site         2           2 1.000000e+00           NA   NA
+#> 422   0X9766       Site         6         125 4.800000e-02  0.239210404    0
+#> 423    0X999       Site        13         331 3.927492e-02 -0.147781041    0
+#> 424    0X002       Site         0          16 0.000000e+00           NA   NA
+#> 425    0X012       Site         1          10 1.000000e-01           NA   NA
+#> 426    0X094       Site         2          52 3.846154e-02 -0.084365164    0
+#> 427   0X1010       Site         6         205 2.926829e-02 -0.798154388    0
+#> 428   0X1211       Site         0          19 0.000000e+00           NA   NA
+#> 429   0X1259       Site         1           6 1.666667e-01           NA   NA
+#> 430   0X1274       Site        11         195 5.641026e-02  1.037481234    0
+#> 431   0X1275       Site         2          71 2.816901e-02 -0.514098981    0
+#> 432   0X1284       Site        21         458 4.585153e-02  0.507355659    0
+#> 433   0X1347       Site         9         375 2.400000e-02 -1.568300253    0
+#> 434   0X1391       Site         2          17 1.176471e-01           NA   NA
+#> 435   0X1437       Site        18         450 4.000000e-02 -0.091818175    0
+#> 436   0X1469       Site         2          33 6.060606e-02  0.542276847    0
+#> 437    0X161       Site         2          61 3.278689e-02 -0.303720553    0
+#> 438   0X1637       Site         2          30 6.666667e-02  0.676084227    0
+#> 439   0X1662       Site         2          54 3.703704e-02 -0.136125518    0
+#> 440   0X1675       Site        17         246 6.910569e-02  2.119293960    1
+#> 441   0X1834       Site         1          55 1.818182e-02 -0.807345403    0
+#> 442   0X1967       Site         8         188 4.255319e-02  0.108379143    0
+#> 443   0X2116       Site         8         243 3.292181e-02 -0.596117952    0
+#> 444   0X2193       Site         1          21 4.761905e-02           NA   NA
+#> 445   0X2226       Site         3          46 6.521739e-02  0.790086087    0
+#> 446   0X2516       Site        10         389 2.570694e-02 -1.436007588    0
+#> 447    0X259       Site        13         374 3.475936e-02 -0.569285004    0
+#> 448   0X2615       Site         1          19 5.263158e-02           NA   NA
+#> 449   0X2628       Site        25         584 4.280822e-02  0.220545461    0
+#> 450   0X2659       Site         0          46 0.000000e+00 -1.329161466    0
+#> 451   0X2675       Site         6         167 3.592814e-02 -0.308044588    0
+#> 452   0X2714       Site         1          37 2.702703e-02 -0.404404864    0
+#> 453   0X2725       Site         2          69 2.898551e-02 -0.474311434    0
+#> 454   0X2775       Site        24         495 4.848485e-02  0.808153366    0
+#> 455   0X2801       Site        37         797 4.642409e-02  0.746726244    0
+#> 456   0X2813       Site        10         178 5.617978e-02  0.976493813    0
+#> 457   0X2831       Site         0          17 0.000000e+00           NA   NA
+#> 458   0X2861       Site         9         165 5.454545e-02  0.839577727    0
+#> 459   0X2908       Site         5          60 8.333333e-02  1.574661695    0
+#> 460   0X3017       Site        24         560 4.285714e-02  0.221513091    0
+#> 461   0X3072       Site         3          37 8.108108e-02  1.170914041    0
+#> 462   0X3250       Site         2          37 5.405405e-02  0.383254589    0
+#> 463   0X3346       Site         1          50 2.000000e-02 -0.708176340    0
+#> 464   0X3423       Site         1          19 5.263158e-02           NA   NA
+#> 465   0X3598       Site         6         106 5.660377e-02  0.774465543    0
+#> 466   0X3599       Site        20         560 3.571429e-02 -0.588338294    0
+#> 467   0X3686       Site         3          24 1.250000e-01           NA   NA
+#> 468   0X3833       Site         1          27 3.703704e-02           NA   NA
+#> 469   0X3869       Site        16         488 3.278689e-02 -0.859051449    0
+#> 470   0X3939       Site         0          12 0.000000e+00           NA   NA
+#> 471   0X4009       Site         8         209 3.827751e-02 -0.181881999    0
+#> 472   0X4050       Site         0          24 0.000000e+00           NA   NA
+#> 473    0X412       Site        27         760 3.552632e-02 -0.710220958    0
+#> 474   0X4273       Site        10         225 4.444444e-02  0.254484439    0
+#> 475   0X4334       Site        18         365 4.931507e-02  0.769959025    0
+#> 476   0X4349       Site        14         383 3.655352e-02 -0.407864729    0
+#> 477   0X4352       Site         0          26 0.000000e+00           NA   NA
+#> 478   0X4487       Site         2          61 3.278689e-02 -0.303720553    0
+#> 479   0X4618       Site        36         806 4.466501e-02  0.511658514    0
+#> 480   0X4697       Site         6         281 2.135231e-02 -1.570231021    0
+#> 481   0X4747       Site         7         151 4.635762e-02  0.321114309    0
+#> 482   0X4766       Site         0          10 0.000000e+00           NA   NA
+#> 483   0X4903       Site        15         404 3.712871e-02 -0.363506100    0
+#> 484   0X4908       Site         2          32 6.250000e-02  0.585328406    0
+#> 485   0X4934       Site        19         322 5.900621e-02  1.556371111    0
+#> 486   0X5070       Site         2          14 1.428571e-01           NA   NA
+#> 487   0X5089       Site         1          20 5.000000e-02           NA   NA
+#> 488   0X5132       Site         0          13 0.000000e+00           NA   NA
+#> 489   0X5391       Site         1           5 2.000000e-01           NA   NA
+#> 490   0X5551       Site        27         479 5.636743e-02  1.621547515    0
+#> 491   0X5616       Site        10         249 4.016064e-02 -0.056155156    0
+#> 492   0X5873       Site        19         560 3.392857e-02 -0.790801140    0
+#> 493   0X5886       Site         9         313 2.875399e-02 -1.029832989    0
+#> 494   0X5900       Site        12         427 2.810304e-02 -1.267288604    0
+#> 495   0X5993       Site        11         388 2.835052e-02 -1.184674285    0
+#> 496   0X6051       Site         9         154 5.844156e-02  1.042758043    0
+#> 497   0X6269       Site         2           5 4.000000e-01           NA   NA
+#> 498   0X6284       Site         1          26 3.846154e-02           NA   NA
+#> 499   0X6289       Site        18         389 4.627249e-02  0.507358133    0
+#> 500   0X6321       Site         3         111 2.702703e-02 -0.700449772    0
+#> 501   0X6394       Site         0          27 0.000000e+00           NA   NA
+#> 502   0X6450       Site         3           8 3.750000e-01           NA   NA
+#> 503   0X6457       Site         0          28 0.000000e+00           NA   NA
+#> 504   0X6480       Site         6         121 4.958678e-02  0.457636208    0
+#> 505   0X6488       Site         2          67 2.985075e-02 -0.433454543    0
+#> 506   0X6501       Site         4         166 2.409639e-02 -1.037490500    0
+#> 507   0X6505       Site         6         158 3.797468e-02 -0.176378700    0
+#> 508    0X652       Site         2          43 4.651163e-02  0.176197100    0
+#> 509   0X6562       Site         2          29 6.896552e-02           NA   NA
+#> 510   0X6567       Site         3          47 6.382979e-02  0.753049956    0
+#> 511   0X6569       Site         1          35 2.857143e-02 -0.349547420    0
+#> 512   0X6580       Site         1          37 2.702703e-02 -0.404404864    0
+#> 513    0X664       Site        16         290 5.517241e-02  1.164212132    0
+#> 514   0X6699       Site         4         115 3.478261e-02 -0.314482354    0
+#> 515   0X6711       Site        17         264 6.439394e-02  1.828665158    0
+#> 516   0X6747       Site        28         652 4.294479e-02  0.249739257    0
+#> 517   0X6846       Site         6         132 4.545455e-02  0.250522331    0
+#> 518   0X6938       Site         3          55 5.454545e-02  0.484730427    0
+#> 519   0X6995       Site        11         306 3.594771e-02 -0.415340733    0
+#> 520    0X700       Site         3          50 6.000000e-02  0.646964223    0
+#> 521   0X7081       Site        33         609 5.418719e-02  1.570615456    0
+#> 522   0X7203       Site         0          21 0.000000e+00           NA   NA
+#> 523   0X7218       Site         2          43 4.651163e-02  0.176197100    0
+#> 524   0X7225       Site        20         445 4.494382e-02  0.408361914    0
+#> 525   0X7261       Site        20         594 3.367003e-02 -0.844643422    0
+#> 526   0X7377       Site         5          92 5.434783e-02  0.617839021    0
+#> 527   0X7420       Site         2          39 5.128205e-02  0.310536259    0
+#> 528   0X7561       Site         3          66 4.545455e-02  0.177146039    0
+#> 529   0X7633       Site        15         429 3.496503e-02 -0.589298504    0
+#> 530   0X7680       Site        19         485 3.917526e-02 -0.182343910    0
+#> 531   0X7772       Site        24         367 6.539510e-02  2.247973169    1
+#> 532    0X781       Site         2          41 4.878049e-02  0.241655468    0
+#> 533   0X7858       Site        10         268 3.731343e-02 -0.281577514    0
+#> 534   0X7871       Site         3          36 8.333333e-02  1.219727704    0
+#> 535   0X7893       Site        19         488 3.893443e-02 -0.208396563    0
+#> 536   0X7965       Site         0           1 0.000000e+00           NA   NA
+#> 537    0X800       Site        17         423 4.018913e-02 -0.070384747    0
+#> 538   0X8015       Site         0          11 0.000000e+00           NA   NA
+#> 539   0X8090       Site        12         318 3.773585e-02 -0.270630890    0
+#> 540   0X8487       Site         1          16 6.250000e-02           NA   NA
+#> 541   0X8500       Site         0          42 0.000000e+00 -1.270057757    0
+#> 542   0X8519       Site         3          67 4.477612e-02  0.151877029    0
+#> 543   0X8543       Site         2          57 3.508772e-02 -0.210367087    0
+#> 544   0X8553       Site         1         126 7.936508e-03 -1.772975407    0
+#> 545   0X8568       Site         8         182 4.395604e-02  0.197310557    0
+#> 546   0X8630       Site         3          64 4.687500e-02  0.228886195    0
+#> 547   0X8702       Site         2          36 5.555556e-02  0.421203470    0
+#> 548   0X9048       Site         0          46 0.000000e+00 -1.329161466    0
+#> 549   0X9121       Site         2          39 5.128205e-02  0.310536259    0
+#> 550   0X9166       Site        19         400 4.750000e-02  0.632104805    0
+#> 551   0X9201       Site         8         239 3.347280e-02 -0.550379627    0
+#> 552   0X9208       Site         4          95 4.210526e-02  0.056124689    0
+#> 553   0X9242       Site         0          12 0.000000e+00           NA   NA
+#> 554   0X9252       Site        27         554 4.873646e-02  0.883335046    0
+#> 555   0X9280       Site         7         172 4.069767e-02 -0.012927212    0
+#> 556   0X9377       Site        13         563 2.309059e-02 -2.025005601   -1
+#> 557   0X9392       Site        19         534 3.558052e-02 -0.589327631    0
+#> 558   0X9427       Site         1          24 4.166667e-02           NA   NA
+#> 559   0X9450       Site         3          50 6.000000e-02  0.646964223    0
+#> 560   0X9490       Site        12         532 2.255639e-02 -2.027498717   -1
+#> 561   0X9544       Site         2          92 2.173913e-02 -0.880695294    0
+#> 562   0X9570       Site         0           2 0.000000e+00           NA   NA
+#> 563   0X9766       Site         6         125 4.800000e-02  0.380140645    0
+#> 564    0X999       Site        17         331 5.135952e-02  0.911430401    0
+#> 565    0X094       Site        11         573 1.919721e-02  0.880990305    0
+#> 566   0X1010       Site        20        1337 1.495886e-02  0.020927206    0
+#> 567   0X1259       Site         4         183 2.185792e-02           NA   NA
+#> 568   0X1274       Site        12         912 1.315789e-02 -0.447653356    0
+#> 569   0X1275       Site         8         547 1.462523e-02           NA   NA
+#> 570   0X1284       Site        22        2031 1.083210e-02 -1.564053356    0
+#> 571   0X1347       Site        34        2234 1.521934e-02  0.132295273    0
+#> 572   0X1391       Site         4         364 1.098901e-02           NA   NA
+#> 573   0X1437       Site        40        2932 1.364256e-02 -0.578303988    0
+#> 574   0X1469       Site         2         162 1.234568e-02           NA   NA
+#> 575    0X161       Site         1         185 5.405405e-03           NA   NA
+#> 576   0X1637       Site         3         379 7.915567e-03           NA   NA
+#> 577   0X1662       Site         4         549 7.285974e-03           NA   NA
+#> 578   0X1675       Site        17        1337 1.271503e-02 -0.680441583    0
+#> 579   0X1834       Site         7         196 3.571429e-02           NA   NA
+#> 580   0X1967       Site        16         730 2.191781e-02  1.622758956    0
+#> 581   0X2116       Site        33        1511 2.183984e-02  2.308758291    1
+#> 582   0X2193       Site         2         200 1.000000e-02           NA   NA
+#> 583   0X2226       Site         5         360 1.388889e-02           NA   NA
+#> 584   0X2516       Site        36        2201 1.635620e-02  0.587256421    0
+#> 585    0X259       Site        39        2238 1.742627e-02  1.024918651    0
+#> 586   0X2615       Site         3         184 1.630435e-02           NA   NA
+#> 587   0X2628       Site        47        3132 1.500639e-02  0.054765314    0
+#> 588   0X2675       Site        12         927 1.294498e-02 -0.506734874    0
+#> 589   0X2714       Site         4         171 2.339181e-02           NA   NA
+#> 590   0X2725       Site        21         938 2.238806e-02  1.962593745    0
+#> 591   0X2775       Site        46        2917 1.576963e-02  0.405239753    0
+#> 592   0X2801       Site        65        4184 1.553537e-02  0.355802107    0
+#> 593   0X2813       Site        15         937 1.600854e-02  0.292191905    0
+#> 594   0X2861       Site        12         926 1.295896e-02 -0.502824953    0
+#> 595   0X2908       Site        12         875 1.371429e-02 -0.297784841    0
+#> 596   0X3017       Site        39        2703 1.442841e-02 -0.205998137    0
+#> 597   0X3072       Site        10         372 2.688172e-02  1.976853932    0
+#> 598   0X3250       Site         4         190 2.105263e-02           NA   NA
+#> 599   0X3346       Site        11         574 1.916376e-02  0.874908999    0
+#> 600   0X3423       Site         6         374 1.604278e-02           NA   NA
+#> 601   0X3598       Site        10         571 1.751313e-02  0.535442454    0
+#> 602   0X3599       Site        49        3144 1.558524e-02  0.332331621    0
+#> 603   0X3833       Site         1         205 4.878049e-03           NA   NA
+#> 604   0X3869       Site        49        2897 1.691405e-02  0.930412647    0
+#> 605   0X3939       Site         2         172 1.162791e-02           NA   NA
+#> 606   0X4009       Site        13         917 1.417666e-02 -0.185153998    0
+#> 607    0X412       Site        77        4742 1.623787e-02  0.792326898    0
+#> 608   0X4273       Site        31        1487 2.084734e-02  1.963177542    0
+#> 609   0X4334       Site        34        2208 1.539855e-02  0.203511228    0
+#> 610   0X4349       Site        20        1821 1.098298e-02 -1.425950434    0
+#> 611   0X4487       Site         3         178 1.685393e-02           NA   NA
+#> 612   0X4618       Site        59        4168 1.415547e-02 -0.406437185    0
+#> 613   0X4697       Site         5         724 6.906077e-03           NA   NA
+#> 614   0X4747       Site        11         900 1.222222e-02 -0.684656947    0
+#> 615   0X4903       Site        33        2137 1.544221e-02  0.217465148    0
+#> 616   0X4908       Site         8         377 2.122016e-02           NA   NA
+#> 617   0X4934       Site        21        1318 1.593323e-02  0.323171209    0
+#> 618   0X5070       Site         5         191 2.617801e-02           NA   NA
+#> 619   0X5089       Site         2         181 1.104972e-02           NA   NA
+#> 620   0X5132       Site         2         180 1.111111e-02           NA   NA
+#> 621   0X5551       Site        55        3140 1.751592e-02  1.256959752    0
+#> 622   0X5616       Site        39        2281 1.709776e-02  0.900595614    0
+#> 623   0X5873       Site        55        3468 1.585928e-02  0.486994570    0
+#> 624   0X5886       Site        18        1105 1.628959e-02  0.397173127    0
+#> 625   0X5900       Site        43        2924 1.470588e-02 -0.085992958    0
+#> 626   0X5993       Site        32        1790 1.787709e-02  1.079663163    0
+#> 627   0X6051       Site        19        1126 1.687389e-02  0.568537052    0
+#> 628   0X6284       Site         4         202 1.980198e-02           NA   NA
+#> 629   0X6289       Site        33        1644 2.007299e-02  1.795817117    0
+#> 630   0X6321       Site         7         740 9.459459e-03           NA   NA
+#> 631   0X6394       Site         3         161 1.863354e-02           NA   NA
+#> 632   0X6450       Site         2         166 1.204819e-02           NA   NA
+#> 633   0X6457       Site         6         387 1.550388e-02           NA   NA
+#> 634   0X6480       Site        10         519 1.926782e-02  0.852202824    0
+#> 635   0X6488       Site         6         722 8.310249e-03           NA   NA
+#> 636   0X6501       Site        15         718 2.089136e-02  1.374246753    0
+#> 637   0X6505       Site         8         730 1.095890e-02           NA   NA
+#> 638    0X652       Site         2         171 1.169591e-02           NA   NA
+#> 639   0X6562       Site        13         567 2.292769e-02  1.635725017    0
+#> 640   0X6567       Site         1         176 5.681818e-03           NA   NA
+#> 641   0X6569       Site         6         364 1.648352e-02           NA   NA
+#> 642   0X6580       Site         4         188 2.127660e-02           NA   NA
+#> 643    0X664       Site        26        1858 1.399354e-02 -0.331031628    0
+#> 644   0X6699       Site        11         754 1.458886e-02 -0.071136953    0
+#> 645   0X6711       Site        15        1466 1.023192e-02 -1.525256034    0
+#> 646   0X6747       Site        59        3547 1.663378e-02  0.886819746    0
+#> 647   0X6846       Site        11         748 1.470588e-02 -0.043493565    0
+#> 648   0X6938       Site         4         562 7.117438e-03           NA   NA
+#> 649   0X6995       Site        13        1265 1.027668e-02 -1.403232861    0
+#> 650    0X700       Site         2         353 5.665722e-03           NA   NA
+#> 651   0X7081       Site        53        3251 1.630268e-02  0.687628101    0
+#> 652   0X7203       Site         5         181 2.762431e-02           NA   NA
+#> 653   0X7218       Site         3         185 1.621622e-02           NA   NA
+#> 654   0X7225       Site        37        2355 1.571125e-02  0.339899544    0
+#> 655   0X7261       Site        49        3853 1.271736e-02 -1.153877402    0
+#> 656   0X7377       Site         9         570 1.578947e-02           NA   NA
+#> 657   0X7420       Site         3         357 8.403361e-03           NA   NA
+#> 658   0X7561       Site        11         543 2.025783e-02  1.068893754    0
+#> 659   0X7633       Site        34        1826 1.861993e-02  1.361820016    0
+#> 660   0X7680       Site        36        2349 1.532567e-02  0.179713165    0
+#> 661   0X7772       Site        21        1487 1.412239e-02 -0.253667825    0
+#> 662    0X781       Site         2         188 1.063830e-02           NA   NA
+#> 663   0X7858       Site        16        1627 9.834050e-03 -1.744020741    0
+#> 664   0X7871       Site         0         179 0.000000e+00           NA   NA
+#> 665   0X7893       Site        39        2918 1.336532e-02 -0.704947896    0
+#> 666    0X800       Site        30        2343 1.280410e-02 -0.863911154    0
+#> 667   0X8015       Site         4         190 2.105263e-02           NA   NA
+#> 668   0X8090       Site        13        1097 1.185050e-02 -0.861131209    0
+#> 669   0X8487       Site         6         399 1.503759e-02           NA   NA
+#> 670   0X8500       Site         6         545 1.100917e-02           NA   NA
+#> 671   0X8519       Site         5         386 1.295337e-02           NA   NA
+#> 672   0X8543       Site         4         364 1.098901e-02           NA   NA
+#> 673   0X8553       Site         6         577 1.039861e-02           NA   NA
+#> 674   0X8568       Site        12         736 1.630435e-02  0.327565658    0
+#> 675   0X8630       Site         4         372 1.075269e-02           NA   NA
+#> 676   0X8702       Site         6         364 1.648352e-02           NA   NA
+#> 677   0X9048       Site         7         348 2.011494e-02           NA   NA
+#> 678   0X9121       Site         1         356 2.808989e-03           NA   NA
+#> 679   0X9166       Site        24        2164 1.109057e-02 -1.511667129    0
+#> 680   0X9201       Site        19        1529 1.242642e-02 -0.824134078    0
+#> 681   0X9208       Site        12         696 1.724138e-02  0.529864495    0
+#> 682   0X9242       Site         7         386 1.813472e-02           NA   NA
+#> 683   0X9252       Site        57        3158 1.804940e-02  1.516835072    0
+#> 684   0X9280       Site         8         713 1.122020e-02           NA   NA
+#> 685   0X9377       Site        31        2544 1.218553e-02 -1.166911386    0
+#> 686   0X9392       Site        39        3625 1.075862e-02 -2.127359845    0
+#> 687   0X9427       Site         1         155 6.451613e-03           NA   NA
+#> 688   0X9450       Site         6         341 1.759531e-02           NA   NA
+#> 689   0X9490       Site        50        3272 1.528117e-02  0.190343712    0
+#> 690   0X9544       Site         4         355 1.126761e-02           NA   NA
+#> 691   0X9570       Site         2         178 1.123596e-02           NA   NA
+#> 692   0X9766       Site        18         777 2.316602e-02  1.971617752    0
+#> 693    0X999       Site        21        2018 1.040634e-02 -1.722539001    0
+#> 694    0X002       Site         0           1 0.000000e+00           NA   NA
+#> 695    0X012       Site         0           1 0.000000e+00           NA   NA
+#> 696    0X094       Site         0           4 0.000000e+00           NA   NA
+#> 697   0X1010       Site         0           7 0.000000e+00           NA   NA
+#> 698   0X1211       Site         0           1 0.000000e+00           NA   NA
+#> 699   0X1259       Site         0           1 0.000000e+00           NA   NA
+#> 700   0X1274       Site         0           5 0.000000e+00           NA   NA
+#> 701   0X1275       Site         0           4 0.000000e+00           NA   NA
+#> 702   0X1284       Site         0           9 0.000000e+00           NA   NA
+#> 703   0X1347       Site         2           9 2.222222e-01           NA   NA
+#> 704   0X1391       Site         1           3 3.333333e-01           NA   NA
+#> 705   0X1437       Site         0          10 0.000000e+00           NA   NA
+#> 706   0X1469       Site         0           2 0.000000e+00           NA   NA
+#> 707    0X161       Site         0           4 0.000000e+00           NA   NA
+#> 708   0X1637       Site         0           3 0.000000e+00           NA   NA
+#> 709   0X1662       Site         0           5 0.000000e+00           NA   NA
+#> 710   0X1675       Site         1           5 2.000000e-01           NA   NA
+#> 711   0X1834       Site         0           2 0.000000e+00           NA   NA
+#> 712   0X1967       Site         0           6 0.000000e+00           NA   NA
+#> 713   0X2116       Site         0           7 0.000000e+00           NA   NA
+#> 714   0X2193       Site         0           1 0.000000e+00           NA   NA
+#> 715   0X2226       Site         0           3 0.000000e+00           NA   NA
+#> 716   0X2516       Site         0           8 0.000000e+00           NA   NA
+#> 717    0X259       Site         1           9 1.111111e-01           NA   NA
+#> 718   0X2615       Site         0           3 0.000000e+00           NA   NA
+#> 719   0X2628       Site         1          13 7.692308e-02           NA   NA
+#> 720   0X2659       Site         0           2 0.000000e+00           NA   NA
+#> 721   0X2675       Site         0           6 0.000000e+00           NA   NA
+#> 722   0X2714       Site         0           3 0.000000e+00           NA   NA
+#> 723   0X2725       Site         1           5 2.000000e-01           NA   NA
+#> 724   0X2775       Site         0          13 0.000000e+00           NA   NA
+#> 725   0X2801       Site         0          15 0.000000e+00           NA   NA
+#> 726   0X2813       Site         0           6 0.000000e+00           NA   NA
+#> 727   0X2831       Site         0           1 0.000000e+00           NA   NA
+#> 728   0X2861       Site         0           4 0.000000e+00           NA   NA
+#> 729   0X2908       Site         0           5 0.000000e+00           NA   NA
+#> 730   0X3017       Site         0          12 0.000000e+00           NA   NA
+#> 731   0X3072       Site         0           3 0.000000e+00           NA   NA
+#> 732   0X3250       Site         0           2 0.000000e+00           NA   NA
+#> 733   0X3346       Site         0           3 0.000000e+00           NA   NA
+#> 734   0X3423       Site         0           3 0.000000e+00           NA   NA
+#> 735   0X3598       Site         0           6 0.000000e+00           NA   NA
+#> 736   0X3599       Site         1          13 7.692308e-02           NA   NA
+#> 737   0X3686       Site         0           2 0.000000e+00           NA   NA
+#> 738   0X3833       Site         0           1 0.000000e+00           NA   NA
+#> 739   0X3869       Site         1           8 1.250000e-01           NA   NA
+#> 740   0X3939       Site         0           1 0.000000e+00           NA   NA
+#> 741   0X4009       Site         1           7 1.428571e-01           NA   NA
+#> 742   0X4050       Site         0           1 0.000000e+00           NA   NA
+#> 743    0X412       Site         1          14 7.142857e-02           NA   NA
+#> 744   0X4273       Site         1           9 1.111111e-01           NA   NA
+#> 745   0X4334       Site         0           8 0.000000e+00           NA   NA
+#> 746   0X4349       Site         0           9 0.000000e+00           NA   NA
+#> 747   0X4352       Site         0           1 0.000000e+00           NA   NA
+#> 748   0X4487       Site         1           3 3.333333e-01           NA   NA
+#> 749   0X4618       Site         1          15 6.666667e-02           NA   NA
+#> 750   0X4697       Site         0           8 0.000000e+00           NA   NA
+#> 751   0X4747       Site         0           4 0.000000e+00           NA   NA
+#> 752   0X4766       Site         0           1 0.000000e+00           NA   NA
+#> 753   0X4903       Site         0           8 0.000000e+00           NA   NA
+#> 754   0X4908       Site         0           3 0.000000e+00           NA   NA
+#> 755   0X4934       Site         0           9 0.000000e+00           NA   NA
+#> 756   0X5070       Site         0           2 0.000000e+00           NA   NA
+#> 757   0X5089       Site         0           1 0.000000e+00           NA   NA
+#> 758   0X5132       Site         0           1 0.000000e+00           NA   NA
+#> 759   0X5391       Site         0           2 0.000000e+00           NA   NA
+#> 760   0X5551       Site         1           9 1.111111e-01           NA   NA
+#> 761   0X5616       Site         0          10 0.000000e+00           NA   NA
+#> 762   0X5873       Site         0          13 0.000000e+00           NA   NA
+#> 763   0X5886       Site         1           9 1.111111e-01           NA   NA
+#> 764   0X5900       Site         0           8 0.000000e+00           NA   NA
+#> 765   0X5993       Site         0           7 0.000000e+00           NA   NA
+#> 766   0X6051       Site         0           4 0.000000e+00           NA   NA
+#> 767   0X6269       Site         1           2 5.000000e-01           NA   NA
+#> 768   0X6284       Site         0           1 0.000000e+00           NA   NA
+#> 769   0X6289       Site         1           7 1.428571e-01           NA   NA
+#> 770   0X6321       Site         0           3 0.000000e+00           NA   NA
+#> 771   0X6394       Site         0           2 0.000000e+00           NA   NA
+#> 772   0X6450       Site         0           1 0.000000e+00           NA   NA
+#> 773   0X6457       Site         0           2 0.000000e+00           NA   NA
+#> 774   0X6480       Site         0           3 0.000000e+00           NA   NA
+#> 775   0X6488       Site         0           5 0.000000e+00           NA   NA
+#> 776   0X6501       Site         0           5 0.000000e+00           NA   NA
+#> 777   0X6505       Site         0           4 0.000000e+00           NA   NA
+#> 778    0X652       Site         0           2 0.000000e+00           NA   NA
+#> 779   0X6562       Site         0           3 0.000000e+00           NA   NA
+#> 780   0X6567       Site         0           3 0.000000e+00           NA   NA
+#> 781   0X6569       Site         0           3 0.000000e+00           NA   NA
+#> 782   0X6580       Site         0           2 0.000000e+00           NA   NA
+#> 783    0X664       Site         0           9 0.000000e+00           NA   NA
+#> 784   0X6699       Site         0           4 0.000000e+00           NA   NA
+#> 785   0X6711       Site         1           7 1.428571e-01           NA   NA
+#> 786   0X6747       Site         1          13 7.692308e-02           NA   NA
+#> 787   0X6846       Site         0           3 0.000000e+00           NA   NA
+#> 788   0X6938       Site         0           3 0.000000e+00           NA   NA
+#> 789   0X6995       Site         0           7 0.000000e+00           NA   NA
+#> 790    0X700       Site         0           4 0.000000e+00           NA   NA
+#> 791   0X7081       Site         1          14 7.142857e-02           NA   NA
+#> 792   0X7203       Site         0           1 0.000000e+00           NA   NA
+#> 793   0X7218       Site         0           2 0.000000e+00           NA   NA
+#> 794   0X7225       Site         2          10 2.000000e-01           NA   NA
+#> 795   0X7261       Site         0          11 0.000000e+00           NA   NA
+#> 796   0X7377       Site         2           6 3.333333e-01           NA   NA
+#> 797   0X7420       Site         0           4 0.000000e+00           NA   NA
+#> 798   0X7561       Site         0           3 0.000000e+00           NA   NA
+#> 799   0X7633       Site         0           9 0.000000e+00           NA   NA
+#> 800   0X7680       Site         1          13 7.692308e-02           NA   NA
+#> 801   0X7772       Site         0           7 0.000000e+00           NA   NA
+#> 802    0X781       Site         0           2 0.000000e+00           NA   NA
+#> 803   0X7858       Site         0           8 0.000000e+00           NA   NA
+#> 804   0X7871       Site         0           2 0.000000e+00           NA   NA
+#> 805   0X7893       Site         1           9 1.111111e-01           NA   NA
+#> 806   0X7965       Site         0           1 0.000000e+00           NA   NA
+#> 807    0X800       Site         0          12 0.000000e+00           NA   NA
+#> 808   0X8015       Site         0           2 0.000000e+00           NA   NA
+#> 809   0X8090       Site         1           9 1.111111e-01           NA   NA
+#> 810   0X8487       Site         0           2 0.000000e+00           NA   NA
+#> 811   0X8500       Site         0           3 0.000000e+00           NA   NA
+#> 812   0X8519       Site         0           3 0.000000e+00           NA   NA
+#> 813   0X8543       Site         3           3 1.000000e+00  7.082738612    2
+#> 814   0X8553       Site         0           4 0.000000e+00           NA   NA
+#> 815   0X8568       Site         1           5 2.000000e-01           NA   NA
+#> 816   0X8630       Site         0           4 0.000000e+00           NA   NA
+#> 817   0X8702       Site         0           3 0.000000e+00           NA   NA
+#> 818   0X9048       Site         0           3 0.000000e+00           NA   NA
+#> 819   0X9121       Site         0           3 0.000000e+00           NA   NA
+#> 820   0X9166       Site         0           8 0.000000e+00           NA   NA
+#> 821   0X9201       Site         0           6 0.000000e+00           NA   NA
+#> 822   0X9208       Site         0           4 0.000000e+00           NA   NA
+#> 823   0X9242       Site         0           2 0.000000e+00           NA   NA
+#> 824   0X9252       Site         0          11 0.000000e+00           NA   NA
+#> 825   0X9280       Site         0           4 0.000000e+00           NA   NA
+#> 826   0X9377       Site         0          12 0.000000e+00           NA   NA
+#> 827   0X9392       Site         0           9 0.000000e+00           NA   NA
+#> 828   0X9427       Site         0           2 0.000000e+00           NA   NA
+#> 829   0X9450       Site         0           3 0.000000e+00           NA   NA
+#> 830   0X9490       Site         1          13 7.692308e-02           NA   NA
+#> 831   0X9544       Site         1           5 2.000000e-01           NA   NA
+#> 832   0X9570       Site         1           1 1.000000e+00           NA   NA
+#> 833   0X9766       Site         0           4 0.000000e+00           NA   NA
+#> 834    0X999       Site         0           8 0.000000e+00           NA   NA
+#> 835    0X002       Site         0           1 0.000000e+00           NA   NA
+#> 836    0X012       Site         0           1 0.000000e+00           NA   NA
+#> 837    0X094       Site         0           4 0.000000e+00           NA   NA
+#> 838   0X1010       Site         0           7 0.000000e+00           NA   NA
+#> 839   0X1211       Site         0           1 0.000000e+00           NA   NA
+#> 840   0X1259       Site         0           1 0.000000e+00           NA   NA
+#> 841   0X1274       Site         0           5 0.000000e+00           NA   NA
+#> 842   0X1275       Site         0           4 0.000000e+00           NA   NA
+#> 843   0X1284       Site         0           9 0.000000e+00           NA   NA
+#> 844   0X1347       Site         0           9 0.000000e+00           NA   NA
+#> 845   0X1391       Site         1           3 3.333333e-01           NA   NA
+#> 846   0X1437       Site         0          10 0.000000e+00           NA   NA
+#> 847   0X1469       Site         0           2 0.000000e+00           NA   NA
+#> 848    0X161       Site         0           4 0.000000e+00           NA   NA
+#> 849   0X1637       Site         0           3 0.000000e+00           NA   NA
+#> 850   0X1662       Site         0           5 0.000000e+00           NA   NA
+#> 851   0X1675       Site         0           5 0.000000e+00           NA   NA
+#> 852   0X1834       Site         0           2 0.000000e+00           NA   NA
+#> 853   0X1967       Site         0           6 0.000000e+00           NA   NA
+#> 854   0X2116       Site         0           7 0.000000e+00           NA   NA
+#> 855   0X2193       Site         0           1 0.000000e+00           NA   NA
+#> 856   0X2226       Site         0           3 0.000000e+00           NA   NA
+#> 857   0X2516       Site         1           8 1.250000e-01           NA   NA
+#> 858    0X259       Site         0           9 0.000000e+00           NA   NA
+#> 859   0X2615       Site         0           3 0.000000e+00           NA   NA
+#> 860   0X2628       Site         1          13 7.692308e-02           NA   NA
+#> 861   0X2659       Site         0           2 0.000000e+00           NA   NA
+#> 862   0X2675       Site         0           6 0.000000e+00           NA   NA
+#> 863   0X2714       Site         0           3 0.000000e+00           NA   NA
+#> 864   0X2725       Site         0           5 0.000000e+00           NA   NA
+#> 865   0X2775       Site         0          13 0.000000e+00           NA   NA
+#> 866   0X2801       Site         0          15 0.000000e+00           NA   NA
+#> 867   0X2813       Site         0           6 0.000000e+00           NA   NA
+#> 868   0X2831       Site         0           1 0.000000e+00           NA   NA
+#> 869   0X2861       Site         0           4 0.000000e+00           NA   NA
+#> 870   0X2908       Site         0           5 0.000000e+00           NA   NA
+#> 871   0X3017       Site         0          12 0.000000e+00           NA   NA
+#> 872   0X3072       Site         0           3 0.000000e+00           NA   NA
+#> 873   0X3250       Site         0           2 0.000000e+00           NA   NA
+#> 874   0X3346       Site         0           3 0.000000e+00           NA   NA
+#> 875   0X3423       Site         0           3 0.000000e+00           NA   NA
+#> 876   0X3598       Site         1           6 1.666667e-01           NA   NA
+#> 877   0X3599       Site         0          13 0.000000e+00           NA   NA
+#> 878   0X3686       Site         0           2 0.000000e+00           NA   NA
+#> 879   0X3833       Site         0           1 0.000000e+00           NA   NA
+#> 880   0X3869       Site         1           8 1.250000e-01           NA   NA
+#> 881   0X3939       Site         0           1 0.000000e+00           NA   NA
+#> 882   0X4009       Site         0           7 0.000000e+00           NA   NA
+#> 883   0X4050       Site         0           1 0.000000e+00           NA   NA
+#> 884    0X412       Site         1          14 7.142857e-02           NA   NA
+#> 885   0X4273       Site         1           9 1.111111e-01           NA   NA
+#> 886   0X4334       Site         1           8 1.250000e-01           NA   NA
+#> 887   0X4349       Site         0           9 0.000000e+00           NA   NA
+#> 888   0X4352       Site         0           1 0.000000e+00           NA   NA
+#> 889   0X4487       Site         0           3 0.000000e+00           NA   NA
+#> 890   0X4618       Site         1          15 6.666667e-02           NA   NA
+#> 891   0X4697       Site         0           8 0.000000e+00           NA   NA
+#> 892   0X4747       Site         0           4 0.000000e+00           NA   NA
+#> 893   0X4766       Site         0           1 0.000000e+00           NA   NA
+#> 894   0X4903       Site         0           8 0.000000e+00           NA   NA
+#> 895   0X4908       Site         0           3 0.000000e+00           NA   NA
+#> 896   0X4934       Site         0           9 0.000000e+00           NA   NA
+#> 897   0X5070       Site         0           2 0.000000e+00           NA   NA
+#> 898   0X5089       Site         0           1 0.000000e+00           NA   NA
+#> 899   0X5132       Site         0           1 0.000000e+00           NA   NA
+#> 900   0X5391       Site         0           2 0.000000e+00           NA   NA
+#> 901   0X5551       Site         0           9 0.000000e+00           NA   NA
+#> 902   0X5616       Site         1          10 1.000000e-01           NA   NA
+#> 903   0X5873       Site         0          13 0.000000e+00           NA   NA
+#> 904   0X5886       Site         1           9 1.111111e-01           NA   NA
+#> 905   0X5900       Site         0           8 0.000000e+00           NA   NA
+#> 906   0X5993       Site         0           7 0.000000e+00           NA   NA
+#> 907   0X6051       Site         0           4 0.000000e+00           NA   NA
+#> 908   0X6269       Site         0           2 0.000000e+00           NA   NA
+#> 909   0X6284       Site         0           1 0.000000e+00           NA   NA
+#> 910   0X6289       Site         1           7 1.428571e-01           NA   NA
+#> 911   0X6321       Site         0           3 0.000000e+00           NA   NA
+#> 912   0X6394       Site         0           2 0.000000e+00           NA   NA
+#> 913   0X6450       Site         0           1 0.000000e+00           NA   NA
+#> 914   0X6457       Site         0           2 0.000000e+00           NA   NA
+#> 915   0X6480       Site         0           3 0.000000e+00           NA   NA
+#> 916   0X6488       Site         0           5 0.000000e+00           NA   NA
+#> 917   0X6501       Site         0           5 0.000000e+00           NA   NA
+#> 918   0X6505       Site         0           4 0.000000e+00           NA   NA
+#> 919    0X652       Site         0           2 0.000000e+00           NA   NA
+#> 920   0X6562       Site         0           3 0.000000e+00           NA   NA
+#> 921   0X6567       Site         0           3 0.000000e+00           NA   NA
+#> 922   0X6569       Site         0           3 0.000000e+00           NA   NA
+#> 923   0X6580       Site         0           2 0.000000e+00           NA   NA
+#> 924    0X664       Site         0           9 0.000000e+00           NA   NA
+#> 925   0X6699       Site         0           4 0.000000e+00           NA   NA
+#> 926   0X6711       Site         0           7 0.000000e+00           NA   NA
+#> 927   0X6747       Site         1          13 7.692308e-02           NA   NA
+#> 928   0X6846       Site         0           3 0.000000e+00           NA   NA
+#> 929   0X6938       Site         0           3 0.000000e+00           NA   NA
+#> 930   0X6995       Site         0           7 0.000000e+00           NA   NA
+#> 931    0X700       Site         0           4 0.000000e+00           NA   NA
+#> 932   0X7081       Site         1          14 7.142857e-02           NA   NA
+#> 933   0X7203       Site         0           1 0.000000e+00           NA   NA
+#> 934   0X7218       Site         0           2 0.000000e+00           NA   NA
+#> 935   0X7225       Site         0          10 0.000000e+00           NA   NA
+#> 936   0X7261       Site         1          11 9.090909e-02           NA   NA
+#> 937   0X7377       Site         0           6 0.000000e+00           NA   NA
+#> 938   0X7420       Site         0           4 0.000000e+00           NA   NA
+#> 939   0X7561       Site         0           3 0.000000e+00           NA   NA
+#> 940   0X7633       Site         1           9 1.111111e-01           NA   NA
+#> 941   0X7680       Site         1          13 7.692308e-02           NA   NA
+#> 942   0X7772       Site         0           7 0.000000e+00           NA   NA
+#> 943    0X781       Site         0           2 0.000000e+00           NA   NA
+#> 944   0X7858       Site         0           8 0.000000e+00           NA   NA
+#> 945   0X7871       Site         0           2 0.000000e+00           NA   NA
+#> 946   0X7893       Site         2           9 2.222222e-01           NA   NA
+#> 947   0X7965       Site         0           1 0.000000e+00           NA   NA
+#> 948    0X800       Site         0          12 0.000000e+00           NA   NA
+#> 949   0X8015       Site         0           2 0.000000e+00           NA   NA
+#> 950   0X8090       Site         1           9 1.111111e-01           NA   NA
+#> 951   0X8487       Site         0           2 0.000000e+00           NA   NA
+#> 952   0X8500       Site         0           3 0.000000e+00           NA   NA
+#> 953   0X8519       Site         0           3 0.000000e+00           NA   NA
+#> 954   0X8543       Site         0           3 0.000000e+00           NA   NA
+#> 955   0X8553       Site         0           4 0.000000e+00           NA   NA
+#> 956   0X8568       Site         0           5 0.000000e+00           NA   NA
+#> 957   0X8630       Site         0           4 0.000000e+00           NA   NA
+#> 958   0X8702       Site         0           3 0.000000e+00           NA   NA
+#> 959   0X9048       Site         0           3 0.000000e+00           NA   NA
+#> 960   0X9121       Site         0           3 0.000000e+00           NA   NA
+#> 961   0X9166       Site         1           8 1.250000e-01           NA   NA
+#> 962   0X9201       Site         0           6 0.000000e+00           NA   NA
+#> 963   0X9208       Site         0           4 0.000000e+00           NA   NA
+#> 964   0X9242       Site         0           2 0.000000e+00           NA   NA
+#> 965   0X9252       Site         1          11 9.090909e-02           NA   NA
+#> 966   0X9280       Site         0           4 0.000000e+00           NA   NA
+#> 967   0X9377       Site         0          12 0.000000e+00           NA   NA
+#> 968   0X9392       Site         2           9 2.222222e-01           NA   NA
+#> 969   0X9427       Site         0           2 0.000000e+00           NA   NA
+#> 970   0X9450       Site         0           3 0.000000e+00           NA   NA
+#> 971   0X9490       Site         0          13 0.000000e+00           NA   NA
+#> 972   0X9544       Site         0           5 0.000000e+00           NA   NA
+#> 973   0X9570       Site         0           1 0.000000e+00           NA   NA
+#> 974   0X9766       Site         0           4 0.000000e+00           NA   NA
+#> 975    0X999       Site         0           8 0.000000e+00           NA   NA
+#> 976    0X002       Site         0           1 0.000000e+00           NA   NA
+#> 977    0X012       Site         1           1 1.000000e+00           NA   NA
+#> 978    0X094       Site         1           4 2.500000e-01           NA   NA
+#> 979   0X1010       Site         1           7 1.428571e-01           NA   NA
+#> 980   0X1211       Site         1           1 1.000000e+00           NA   NA
+#> 981   0X1259       Site         0           1 0.000000e+00           NA   NA
+#> 982   0X1274       Site         1           5 2.000000e-01           NA   NA
+#> 983   0X1275       Site         2           4 5.000000e-01           NA   NA
+#> 984   0X1284       Site         3           9 3.333333e-01  0.802629932    0
+#> 985   0X1347       Site         2           7 2.857143e-01           NA   NA
+#> 986   0X1391       Site         0           2 0.000000e+00           NA   NA
+#> 987   0X1437       Site         3          10 3.000000e-01  0.584925601    0
+#> 988   0X1469       Site         0           2 0.000000e+00           NA   NA
+#> 989    0X161       Site         2           4 5.000000e-01           NA   NA
+#> 990   0X1637       Site         1           3 3.333333e-01           NA   NA
+#> 991   0X1662       Site         1           4 2.500000e-01           NA   NA
+#> 992   0X1675       Site         1           4 2.500000e-01           NA   NA
+#> 993   0X1834       Site         1           2 5.000000e-01           NA   NA
+#> 994   0X1967       Site         2           6 3.333333e-01           NA   NA
+#> 995   0X2116       Site         4           6 6.666667e-01  2.677976324    1
+#> 996   0X2193       Site         0           1 0.000000e+00           NA   NA
+#> 997   0X2226       Site         0           3 0.000000e+00           NA   NA
+#> 998   0X2516       Site         0           6 0.000000e+00           NA   NA
+#> 999    0X259       Site         1           7 1.428571e-01           NA   NA
+#> 1000  0X2615       Site         0           3 0.000000e+00           NA   NA
+#> 1001  0X2628       Site         3          12 2.500000e-01  0.211688909    0
+#> 1002  0X2659       Site         1           2 5.000000e-01           NA   NA
+#> 1003  0X2675       Site         1           5 2.000000e-01           NA   NA
+#> 1004  0X2714       Site         0           3 0.000000e+00           NA   NA
+#> 1005  0X2725       Site         0           4 0.000000e+00           NA   NA
+#> 1006  0X2775       Site         2          11 1.818182e-01           NA   NA
+#> 1007  0X2801       Site         4          15 2.666667e-01  0.396578474    0
+#> 1008  0X2813       Site         1           6 1.666667e-01           NA   NA
+#> 1009  0X2831       Site         0           1 0.000000e+00           NA   NA
+#> 1010  0X2861       Site         2           4 5.000000e-01           NA   NA
+#> 1011  0X2908       Site         0           5 0.000000e+00           NA   NA
+#> 1012  0X3017       Site         2           9 2.222222e-01           NA   NA
+#> 1013  0X3072       Site         0           2 0.000000e+00           NA   NA
+#> 1014  0X3250       Site         0           2 0.000000e+00           NA   NA
+#> 1015  0X3346       Site         0           3 0.000000e+00           NA   NA
+#> 1016  0X3423       Site         0           3 0.000000e+00           NA   NA
+#> 1017  0X3598       Site         1           6 1.666667e-01           NA   NA
+#> 1018  0X3599       Site         3          11 2.727273e-01  0.389403267    0
+#> 1019  0X3686       Site         1           2 5.000000e-01           NA   NA
+#> 1020  0X3833       Site         0           1 0.000000e+00           NA   NA
+#> 1021  0X3869       Site         2           6 3.333333e-01           NA   NA
+#> 1022  0X3939       Site         0           1 0.000000e+00           NA   NA
+#> 1023  0X4009       Site         1           5 2.000000e-01           NA   NA
+#> 1024  0X4050       Site         0           1 0.000000e+00           NA   NA
+#> 1025   0X412       Site         4          12 3.333333e-01  0.926797215    0
+#> 1026  0X4273       Site         2           8 2.500000e-01           NA   NA
+#> 1027  0X4334       Site         4           7 5.714286e-01  2.268347323    1
+#> 1028  0X4349       Site         2           8 2.500000e-01           NA   NA
+#> 1029  0X4352       Site         0           1 0.000000e+00           NA   NA
+#> 1030  0X4487       Site         0           2 0.000000e+00           NA   NA
+#> 1031  0X4618       Site         3          13 2.307692e-01  0.048569343    0
+#> 1032  0X4697       Site         1           7 1.428571e-01           NA   NA
+#> 1033  0X4747       Site         1           4 2.500000e-01           NA   NA
+#> 1034  0X4766       Site         0           1 0.000000e+00           NA   NA
+#> 1035  0X4903       Site         0           8 0.000000e+00           NA   NA
+#> 1036  0X4908       Site         0           2 0.000000e+00           NA   NA
+#> 1037  0X4934       Site         3           7 4.285714e-01  1.332050768    0
+#> 1038  0X5070       Site         1           2 5.000000e-01           NA   NA
+#> 1039  0X5132       Site         0           1 0.000000e+00           NA   NA
+#> 1040  0X5391       Site         0           2 0.000000e+00           NA   NA
+#> 1041  0X5551       Site         2           8 2.500000e-01           NA   NA
+#> 1042  0X5616       Site         2          10 2.000000e-01           NA   NA
+#> 1043  0X5873       Site         1          11 9.090909e-02           NA   NA
+#> 1044  0X5886       Site         1           8 1.250000e-01           NA   NA
+#> 1045  0X5900       Site         0           7 0.000000e+00           NA   NA
+#> 1046  0X5993       Site         2           7 2.857143e-01           NA   NA
+#> 1047  0X6051       Site         2           4 5.000000e-01           NA   NA
+#> 1048  0X6269       Site         0           1 0.000000e+00           NA   NA
+#> 1049  0X6284       Site         0           1 0.000000e+00           NA   NA
+#> 1050  0X6289       Site         0           6 0.000000e+00           NA   NA
+#> 1051  0X6321       Site         2           3 6.666667e-01           NA   NA
+#> 1052  0X6394       Site         0           2 0.000000e+00           NA   NA
+#> 1053  0X6450       Site         0           1 0.000000e+00           NA   NA
+#> 1054  0X6457       Site         1           2 5.000000e-01           NA   NA
+#> 1055  0X6480       Site         0           3 0.000000e+00           NA   NA
+#> 1056  0X6488       Site         0           5 0.000000e+00           NA   NA
+#> 1057  0X6501       Site         2           5 4.000000e-01           NA   NA
+#> 1058  0X6505       Site         3           4 7.500000e-01  2.599426485    1
+#> 1059   0X652       Site         1           2 5.000000e-01           NA   NA
+#> 1060  0X6562       Site         0           3 0.000000e+00           NA   NA
+#> 1061  0X6567       Site         1           3 3.333333e-01           NA   NA
+#> 1062  0X6569       Site         1           2 5.000000e-01           NA   NA
+#> 1063  0X6580       Site         0           2 0.000000e+00           NA   NA
+#> 1064   0X664       Site         3           9 3.333333e-01  0.802629932    0
+#> 1065  0X6699       Site         0           4 0.000000e+00           NA   NA
+#> 1066  0X6711       Site         2           6 3.333333e-01           NA   NA
+#> 1067  0X6747       Site         3          12 2.500000e-01  0.211688909    0
+#> 1068  0X6846       Site         1           2 5.000000e-01           NA   NA
+#> 1069  0X6938       Site         1           3 3.333333e-01           NA   NA
+#> 1070  0X6995       Site         0           6 0.000000e+00           NA   NA
+#> 1071   0X700       Site         1           4 2.500000e-01           NA   NA
+#> 1072  0X7081       Site         3          13 2.307692e-01  0.048569343    0
+#> 1073  0X7203       Site         0           1 0.000000e+00           NA   NA
+#> 1074  0X7218       Site         0           2 0.000000e+00           NA   NA
+#> 1075  0X7225       Site         1           8 1.250000e-01           NA   NA
+#> 1076  0X7261       Site         4          11 3.636364e-01  1.136309532    0
+#> 1077  0X7377       Site         0           3 0.000000e+00           NA   NA
+#> 1078  0X7420       Site         1           4 2.500000e-01           NA   NA
+#> 1079  0X7561       Site         0           2 0.000000e+00           NA   NA
+#> 1080  0X7633       Site         3           9 3.333333e-01  0.802629932    0
+#> 1081  0X7680       Site         1          12 8.333333e-02           NA   NA
+#> 1082  0X7772       Site         1           6 1.666667e-01           NA   NA
+#> 1083   0X781       Site         0           2 0.000000e+00           NA   NA
+#> 1084  0X7858       Site         0           8 0.000000e+00           NA   NA
+#> 1085  0X7871       Site         2           2 1.000000e+00           NA   NA
+#> 1086  0X7893       Site         1           6 1.666667e-01           NA   NA
+#> 1087  0X7965       Site         0           1 0.000000e+00           NA   NA
+#> 1088   0X800       Site         7          11 6.363636e-01  3.377028329    2
+#> 1089  0X8015       Site         0           2 0.000000e+00           NA   NA
+#> 1090  0X8090       Site         2           9 2.222222e-01           NA   NA
+#> 1091  0X8487       Site         0           2 0.000000e+00           NA   NA
+#> 1092  0X8500       Site         0           3 0.000000e+00           NA   NA
+#> 1093  0X8519       Site         0           3 0.000000e+00           NA   NA
+#> 1094  0X8543       Site         0           1 0.000000e+00           NA   NA
+#> 1095  0X8553       Site         1           4 2.500000e-01           NA   NA
+#> 1096  0X8568       Site         1           4 2.500000e-01           NA   NA
+#> 1097  0X8630       Site         1           4 2.500000e-01           NA   NA
+#> 1098  0X8702       Site         0           3 0.000000e+00           NA   NA
+#> 1099  0X9048       Site         0           2 0.000000e+00           NA   NA
+#> 1100  0X9121       Site         0           3 0.000000e+00           NA   NA
+#> 1101  0X9166       Site         0           6 0.000000e+00           NA   NA
+#> 1102  0X9201       Site         2           5 4.000000e-01           NA   NA
+#> 1103  0X9208       Site         0           4 0.000000e+00           NA   NA
+#> 1104  0X9242       Site         0           2 0.000000e+00           NA   NA
+#> 1105  0X9252       Site         4          10 4.000000e-01  1.368287501    0
+#> 1106  0X9280       Site         0           4 0.000000e+00           NA   NA
+#> 1107  0X9377       Site         3          11 2.727273e-01  0.389403267    0
+#> 1108  0X9392       Site         4           9 4.444444e-01  1.628365878    0
+#> 1109  0X9427       Site         1           2 5.000000e-01           NA   NA
+#> 1110  0X9450       Site         0           2 0.000000e+00           NA   NA
+#> 1111  0X9490       Site         2          13 1.538462e-01           NA   NA
+#> 1112  0X9544       Site         0           4 0.000000e+00           NA   NA
+#> 1113  0X9766       Site         0           4 0.000000e+00           NA   NA
+#> 1114   0X999       Site         3           8 3.750000e-01  1.048668500    0
+#> 1115   0X002       Site        16         256 6.250000e-02           NA   NA
+#> 1116   0X012       Site        16         256 6.250000e-02           NA   NA
+#> 1117   0X094       Site        64        1024 6.250000e-02  0.000000000    0
+#> 1118  0X1010       Site       160        2560 6.250000e-02  0.000000000    0
+#> 1119  0X1211       Site        16         256 6.250000e-02           NA   NA
+#> 1120  0X1259       Site        16         256 6.250000e-02           NA   NA
+#> 1121  0X1274       Site       144        2304 6.250000e-02  0.000000000    0
+#> 1122  0X1275       Site        64        1024 6.250000e-02  0.000000000    0
+#> 1123  0X1284       Site       304        4864 6.250000e-02  0.000000000    0
+#> 1124  0X1347       Site       288        4608 6.250000e-02  0.000000000    0
+#> 1125  0X1391       Site        48         768 6.250000e-02  0.000000000    0
+#> 1126  0X1437       Site       352        5632 6.250000e-02  0.000000000    0
+#> 1127  0X1469       Site        32         512 6.250000e-02  0.000000000    0
+#> 1128   0X161       Site        64        1024 6.250000e-02  0.000000000    0
+#> 1129  0X1637       Site        48         768 6.250000e-02  0.000000000    0
+#> 1130  0X1662       Site        80        1280 6.250000e-02  0.000000000    0
+#> 1131  0X1675       Site       176        2816 6.250000e-02  0.000000000    0
+#> 1132  0X1834       Site        32         512 6.250000e-02  0.000000000    0
+#> 1133  0X1967       Site       144        2304 6.250000e-02  0.000000000    0
+#> 1134  0X2116       Site       192        3072 6.250000e-02  0.000000000    0
+#> 1135  0X2193       Site        16         256 6.250000e-02           NA   NA
+#> 1136  0X2226       Site        48         768 6.250000e-02  0.000000000    0
+#> 1137  0X2516       Site       272        4352 6.250000e-02  0.000000000    0
+#> 1138   0X259       Site       256        4096 6.250000e-02  0.000000000    0
+#> 1139  0X2615       Site        48         768 6.250000e-02  0.000000000    0
+#> 1140  0X2628       Site       448        7168 6.250000e-02  0.000000000    0
+#> 1141  0X2659       Site        32         512 6.250000e-02  0.000000000    0
+#> 1142  0X2675       Site       144        2304 6.250000e-02  0.000000000    0
+#> 1143  0X2714       Site        48         768 6.250000e-02  0.000000000    0
+#> 1144  0X2725       Site        80        1280 6.250000e-02  0.000000000    0
+#> 1145  0X2775       Site       400        6400 6.250000e-02  0.000000000    0
+#> 1146  0X2801       Site       528        8448 6.250000e-02  0.000000000    0
+#> 1147  0X2813       Site       144        2304 6.250000e-02  0.000000000    0
+#> 1148  0X2831       Site        16         256 6.250000e-02           NA   NA
+#> 1149  0X2861       Site       128        2048 6.250000e-02  0.000000000    0
+#> 1150  0X2908       Site        80        1280 6.250000e-02  0.000000000    0
+#> 1151  0X3017       Site       368        5888 6.250000e-02  0.000000000    0
+#> 1152  0X3072       Site        48         768 6.250000e-02  0.000000000    0
+#> 1153  0X3250       Site        32         512 6.250000e-02  0.000000000    0
+#> 1154  0X3346       Site        48         768 6.250000e-02  0.000000000    0
+#> 1155  0X3423       Site        48         768 6.250000e-02  0.000000000    0
+#> 1156  0X3598       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1157  0X3599       Site       432        6912 6.250000e-02  0.000000000    0
+#> 1158  0X3686       Site        32         512 6.250000e-02  0.000000000    0
+#> 1159  0X3833       Site        16         256 6.250000e-02           NA   NA
+#> 1160  0X3869       Site       304        4864 6.250000e-02  0.000000000    0
+#> 1161  0X3939       Site        16         256 6.250000e-02           NA   NA
+#> 1162  0X4009       Site       176        2816 6.250000e-02  0.000000000    0
+#> 1163  0X4050       Site        16         256 6.250000e-02           NA   NA
+#> 1164   0X412       Site       528        8448 6.250000e-02  0.000000000    0
+#> 1165  0X4273       Site       192        3072 6.250000e-02  0.000000000    0
+#> 1166  0X4334       Site       256        4096 6.250000e-02  0.000000000    0
+#> 1167  0X4349       Site       288        4608 6.250000e-02  0.000000000    0
+#> 1168  0X4352       Site        16         256 6.250000e-02           NA   NA
+#> 1169  0X4487       Site        48         768 6.250000e-02  0.000000000    0
+#> 1170  0X4618       Site       544        8704 6.250000e-02  0.000000000    0
+#> 1171  0X4697       Site       208        3328 6.250000e-02  0.000000000    0
+#> 1172  0X4747       Site       112        1792 6.250000e-02  0.000000000    0
+#> 1173  0X4766       Site        16         256 6.250000e-02           NA   NA
+#> 1174  0X4903       Site       272        4352 6.250000e-02  0.000000000    0
+#> 1175  0X4908       Site        48         768 6.250000e-02  0.000000000    0
+#> 1176  0X4934       Site       224        3584 6.250000e-02  0.000000000    0
+#> 1177  0X5070       Site        32         512 6.250000e-02  0.000000000    0
+#> 1178  0X5089       Site        16         256 6.250000e-02           NA   NA
+#> 1179  0X5132       Site        16         256 6.250000e-02           NA   NA
+#> 1180  0X5391       Site        32         512 6.250000e-02  0.000000000    0
+#> 1181  0X5551       Site       336        5376 6.250000e-02  0.000000000    0
+#> 1182  0X5616       Site       224        3584 6.250000e-02  0.000000000    0
+#> 1183  0X5873       Site       416        6656 6.250000e-02  0.000000000    0
+#> 1184  0X5886       Site       240        3840 6.250000e-02  0.000000000    0
+#> 1185  0X5900       Site       288        4608 6.250000e-02  0.000000000    0
+#> 1186  0X5993       Site       272        4352 6.250000e-02  0.000000000    0
+#> 1187  0X6051       Site       112        1792 6.250000e-02  0.000000000    0
+#> 1188  0X6269       Site        32         512 6.250000e-02  0.000000000    0
+#> 1189  0X6284       Site        16         256 6.250000e-02           NA   NA
+#> 1190  0X6289       Site       256        4096 6.250000e-02  0.000000000    0
+#> 1191  0X6321       Site        80        1280 6.250000e-02  0.000000000    0
+#> 1192  0X6394       Site        32         512 6.250000e-02  0.000000000    0
+#> 1193  0X6450       Site        16         256 6.250000e-02           NA   NA
+#> 1194  0X6457       Site        32         512 6.250000e-02  0.000000000    0
+#> 1195  0X6480       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1196  0X6488       Site        80        1280 6.250000e-02  0.000000000    0
+#> 1197  0X6501       Site       128        2048 6.250000e-02  0.000000000    0
+#> 1198  0X6505       Site       112        1792 6.250000e-02  0.000000000    0
+#> 1199   0X652       Site        32         512 6.250000e-02  0.000000000    0
+#> 1200  0X6562       Site        48         768 6.250000e-02  0.000000000    0
+#> 1201  0X6567       Site        48         768 6.250000e-02  0.000000000    0
+#> 1202  0X6569       Site        48         768 6.250000e-02  0.000000000    0
+#> 1203  0X6580       Site        32         512 6.250000e-02  0.000000000    0
+#> 1204   0X664       Site       256        4096 6.250000e-02  0.000000000    0
+#> 1205  0X6699       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1206  0X6711       Site       208        3328 6.250000e-02  0.000000000    0
+#> 1207  0X6747       Site       448        7168 6.250000e-02  0.000000000    0
+#> 1208  0X6846       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1209  0X6938       Site        48         768 6.250000e-02  0.000000000    0
+#> 1210  0X6995       Site       208        3328 6.250000e-02  0.000000000    0
+#> 1211   0X700       Site        64        1024 6.250000e-02  0.000000000    0
+#> 1212  0X7081       Site       448        7168 6.250000e-02  0.000000000    0
+#> 1213  0X7203       Site        16         256 6.250000e-02           NA   NA
+#> 1214  0X7218       Site        32         512 6.250000e-02  0.000000000    0
+#> 1215  0X7225       Site       304        4864 6.250000e-02  0.000000000    0
+#> 1216  0X7261       Site       416        6656 6.250000e-02  0.000000000    0
+#> 1217  0X7377       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1218  0X7420       Site        64        1024 6.250000e-02  0.000000000    0
+#> 1219  0X7561       Site        48         768 6.250000e-02  0.000000000    0
+#> 1220  0X7633       Site       304        4864 6.250000e-02  0.000000000    0
+#> 1221  0X7680       Site       400        6400 6.250000e-02  0.000000000    0
+#> 1222  0X7772       Site       240        3840 6.250000e-02  0.000000000    0
+#> 1223   0X781       Site        32         512 6.250000e-02  0.000000000    0
+#> 1224  0X7858       Site       192        3072 6.250000e-02  0.000000000    0
+#> 1225  0X7871       Site        32         512 6.250000e-02  0.000000000    0
+#> 1226  0X7893       Site       336        5376 6.250000e-02  0.000000000    0
+#> 1227  0X7965       Site        16         256 6.250000e-02           NA   NA
+#> 1228   0X800       Site       304        4864 6.250000e-02  0.000000000    0
+#> 1229  0X8015       Site        32         512 6.250000e-02  0.000000000    0
+#> 1230  0X8090       Site       224        3584 6.250000e-02  0.000000000    0
+#> 1231  0X8487       Site        32         512 6.250000e-02  0.000000000    0
+#> 1232  0X8500       Site        48         768 6.250000e-02  0.000000000    0
+#> 1233  0X8519       Site        48         768 6.250000e-02  0.000000000    0
+#> 1234  0X8543       Site        48         768 6.250000e-02  0.000000000    0
+#> 1235  0X8553       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1236  0X8568       Site       144        2304 6.250000e-02  0.000000000    0
+#> 1237  0X8630       Site        64        1024 6.250000e-02  0.000000000    0
+#> 1238  0X8702       Site        48         768 6.250000e-02  0.000000000    0
+#> 1239  0X9048       Site        48         768 6.250000e-02  0.000000000    0
+#> 1240  0X9121       Site        48         768 6.250000e-02  0.000000000    0
+#> 1241  0X9166       Site       272        4352 6.250000e-02  0.000000000    0
+#> 1242  0X9201       Site       160        2560 6.250000e-02  0.000000000    0
+#> 1243  0X9208       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1244  0X9242       Site        32         512 6.250000e-02  0.000000000    0
+#> 1245  0X9252       Site       368        5888 6.250000e-02  0.000000000    0
+#> 1246  0X9280       Site       112        1792 6.250000e-02  0.000000000    0
+#> 1247  0X9377       Site       400        6400 6.250000e-02  0.000000000    0
+#> 1248  0X9392       Site       384        6144 6.250000e-02  0.000000000    0
+#> 1249  0X9427       Site        32         512 6.250000e-02  0.000000000    0
+#> 1250  0X9450       Site        48         768 6.250000e-02  0.000000000    0
+#> 1251  0X9490       Site       368        5888 6.250000e-02  0.000000000    0
+#> 1252  0X9544       Site        80        1280 6.250000e-02  0.000000000    0
+#> 1253  0X9570       Site        16         256 6.250000e-02           NA   NA
+#> 1254  0X9766       Site        96        1536 6.250000e-02  0.000000000    0
+#> 1255   0X999       Site       240        3840 6.250000e-02  0.000000000    0
+#> 1256   0X002       Site        13          16 8.125000e-01           NA   NA
+#> 1257   0X012       Site        13          16 8.125000e-01           NA   NA
+#> 1258   0X094       Site        47          64 7.343750e-01 -0.239303790    0
+#> 1259  0X1010       Site       111         160 6.937500e-01 -1.675021564    0
+#> 1260  0X1211       Site        12          16 7.500000e-01           NA   NA
+#> 1261  0X1259       Site        12          16 7.500000e-01           NA   NA
+#> 1262  0X1274       Site       113         144 7.847222e-01  1.165538743    0
+#> 1263  0X1275       Site        48          64 7.500000e-01  0.076108851    0
+#> 1264  0X1284       Site       232         304 7.631579e-01  0.744760373    0
+#> 1265  0X1347       Site       218         288 7.569444e-01  0.458825142    0
+#> 1266  0X1391       Site        34          48 7.083333e-01 -0.662502093    0
+#> 1267  0X1437       Site       264         352 7.500000e-01  0.178491076    0
+#> 1268  0X1469       Site        27          32 8.437500e-01           NA   NA
+#> 1269   0X161       Site        49          64 7.656250e-01  0.391521491    0
+#> 1270  0X1637       Site        35          48 7.291667e-01 -0.298294948    0
+#> 1271  0X1662       Site        63          80 7.875000e-01  0.931433207    0
+#> 1272  0X1675       Site       134         176 7.613636e-01  0.506614207    0
+#> 1273  0X1834       Site        24          32 7.500000e-01           NA   NA
+#> 1274  0X1967       Site       112         144 7.777778e-01  0.955263650    0
+#> 1275  0X2116       Site       142         192 7.395833e-01 -0.232382749    0
+#> 1276  0X2193       Site        11          16 6.875000e-01           NA   NA
+#> 1277  0X2226       Site        30          48 6.250000e-01 -2.119330675    0
+#> 1278  0X2516       Site       198         272 7.279412e-01 -0.761083207    0
+#> 1279   0X259       Site       199         256 7.773438e-01  1.256161942    0
+#> 1280  0X2615       Site        35          48 7.291667e-01 -0.298294948    0
+#> 1281  0X2628       Site       352         448 7.857143e-01  2.108801449    1
+#> 1282  0X2659       Site        25          32 7.812500e-01           NA   NA
+#> 1283  0X2675       Site       108         144 7.500000e-01  0.114163276    0
+#> 1284  0X2714       Site        36          48 7.500000e-01  0.065912198    0
+#> 1285  0X2725       Site        60          80 7.500000e-01  0.085092282    0
+#> 1286  0X2775       Site       292         400 7.300000e-01 -0.819048323    0
+#> 1287  0X2801       Site       383         528 7.253788e-01 -1.208957590    0
+#> 1288  0X2813       Site       104         144 7.222222e-01 -0.726937098    0
+#> 1289  0X2831       Site        14          16 8.750000e-01           NA   NA
+#> 1290  0X2861       Site        93         128 7.265625e-01 -0.561457082    0
+#> 1291  0X2908       Site        58          80 7.250000e-01 -0.479135002    0
+#> 1292  0X3017       Site       271         368 7.364130e-01 -0.475178206    0
+#> 1293  0X3072       Site        33          48 6.875000e-01 -1.026709239    0
+#> 1294  0X3250       Site        25          32 7.812500e-01           NA   NA
+#> 1295  0X3346       Site        38          48 7.916667e-01  0.794326489    0
+#> 1296  0X3423       Site        37          48 7.708333e-01  0.430119344    0
+#> 1297  0X3598       Site        74          96 7.708333e-01  0.608280609    0
+#> 1298  0X3599       Site       301         432 6.967593e-01 -2.594518188    0
+#> 1299  0X3686       Site        25          32 7.812500e-01           NA   NA
+#> 1300  0X3833       Site        13          16 8.125000e-01           NA   NA
+#> 1301  0X3869       Site       216         304 7.105263e-01 -1.570779542    0
+#> 1302  0X3939       Site        13          16 8.125000e-01           NA   NA
+#> 1303  0X4009       Site       143         176 8.125000e-01  2.218423014    1
+#> 1304  0X4050       Site        11          16 6.875000e-01           NA   NA
+#> 1305   0X412       Site       400         528 7.575758e-01  0.657856375    0
+#> 1306  0X4273       Site       153         192 7.968750e-01  1.770756551    0
+#> 1307  0X4334       Site       196         256 7.656250e-01  0.783042982    0
+#> 1308  0X4349       Site       224         288 7.777778e-01  1.350946809    0
+#> 1309  0X4352       Site        15          16 9.375000e-01           NA   NA
+#> 1310  0X4487       Site        36          48 7.500000e-01  0.065912198    0
+#> 1311  0X4618       Site       414         544 7.610294e-01  0.871007382    0
+#> 1312  0X4697       Site       163         208 7.836538e-01  1.361923356    0
+#> 1313  0X4747       Site        78         112 6.964286e-01 -1.329894723    0
+#> 1314  0X4766       Site        10          16 6.250000e-01           NA   NA
+#> 1315  0X4903       Site       206         272 7.573529e-01  0.462897622    0
+#> 1316  0X4908       Site        39          48 8.125000e-01  1.158533635    0
+#> 1317  0X4934       Site       156         224 6.964286e-01 -1.880755153    0
+#> 1318  0X5070       Site        22          32 6.875000e-01           NA   NA
+#> 1319  0X5089       Site        11          16 6.875000e-01           NA   NA
+#> 1320  0X5132       Site        13          16 8.125000e-01           NA   NA
+#> 1321  0X5391       Site        22          32 6.875000e-01           NA   NA
+#> 1322  0X5551       Site       262         336 7.797619e-01  1.550960903    0
+#> 1323  0X5616       Site       168         224 7.500000e-01  0.142386621    0
+#> 1324  0X5873       Site       325         416 7.812500e-01  1.802335465    0
+#> 1325  0X5886       Site       187         240 7.791667e-01  1.287532865    0
+#> 1326  0X5900       Site       212         288 7.361111e-01 -0.433296525    0
+#> 1327  0X5993       Site       202         272 7.426471e-01 -0.149092792    0
+#> 1328  0X6051       Site        85         112 7.589286e-01  0.339112090    0
+#> 1329  0X6269       Site        22          32 6.875000e-01           NA   NA
+#> 1330  0X6284       Site        11          16 6.875000e-01           NA   NA
+#> 1331  0X6289       Site       195         256 7.617188e-01  0.625336662    0
+#> 1332  0X6321       Site        55          80 6.875000e-01 -1.325475927    0
+#> 1333  0X6394       Site        27          32 8.437500e-01           NA   NA
+#> 1334  0X6450       Site        13          16 8.125000e-01           NA   NA
+#> 1335  0X6457       Site        26          32 8.125000e-01           NA   NA
+#> 1336  0X6480       Site        70          96 7.291667e-01 -0.421852760    0
+#> 1337  0X6488       Site        64          80 8.000000e-01  1.213546849    0
+#> 1338  0X6501       Site        94         128 7.343750e-01 -0.338426665    0
+#> 1339  0X6505       Site        83         112 7.410714e-01 -0.137746999    0
+#> 1340   0X652       Site        25          32 7.812500e-01           NA   NA
+#> 1341  0X6562       Site        39          48 8.125000e-01  1.158533635    0
+#> 1342  0X6567       Site        35          48 7.291667e-01 -0.298294948    0
+#> 1343  0X6569       Site        33          48 6.875000e-01 -1.026709239    0
+#> 1344  0X6580       Site        29          32 9.062500e-01           NA   NA
+#> 1345   0X664       Site       191         256 7.460938e-01 -0.005488619    0
+#> 1346  0X6699       Site        74          96 7.708333e-01  0.608280609    0
+#> 1347  0X6711       Site       162         208 7.788462e-01  1.186963902    0
+#> 1348  0X6747       Site       329         448 7.343750e-01 -0.633138315    0
+#> 1349  0X6846       Site        71          96 7.395833e-01 -0.164319418    0
+#> 1350  0X6938       Site        34          48 7.083333e-01 -0.662502093    0
+#> 1351  0X6995       Site       149         208 7.163462e-01 -1.087508993    0
+#> 1352   0X700       Site        48          64 7.500000e-01  0.076108851    0
+#> 1353  0X7081       Site       326         448 7.276786e-01 -0.990782632    0
+#> 1354  0X7203       Site        12          16 7.500000e-01           NA   NA
+#> 1355  0X7218       Site        18          32 5.625000e-01           NA   NA
+#> 1356  0X7225       Site       237         304 7.796053e-01  1.468366596    0
+#> 1357  0X7261       Site       317         416 7.620192e-01  0.812615337    0
+#> 1358  0X7377       Site        71          96 7.395833e-01 -0.164319418    0
+#> 1359  0X7420       Site        41          64 6.406250e-01 -2.131779631    0
+#> 1360  0X7561       Site        33          48 6.875000e-01 -1.026709239    0
+#> 1361  0X7633       Site       214         304 7.039474e-01 -1.860222031    0
+#> 1362  0X7680       Site       298         400 7.450000e-01 -0.062057986    0
+#> 1363  0X7772       Site       181         240 7.541667e-01  0.310262542    0
+#> 1364   0X781       Site        28          32 8.750000e-01           NA   NA
+#> 1365  0X7858       Site       156         192 8.125000e-01  2.317067269    1
+#> 1366  0X7871       Site        24          32 7.500000e-01           NA   NA
+#> 1367  0X7893       Site       249         336 7.410714e-01 -0.238584801    0
+#> 1368  0X7965       Site        13          16 8.125000e-01           NA   NA
+#> 1369   0X800       Site       223         304 7.335526e-01 -0.557730829    0
+#> 1370  0X8015       Site        25          32 7.812500e-01           NA   NA
+#> 1371  0X8090       Site       164         224 7.321429e-01 -0.531993970    0
+#> 1372  0X8487       Site        22          32 6.875000e-01           NA   NA
+#> 1373  0X8500       Site        33          48 6.875000e-01 -1.026709239    0
+#> 1374  0X8519       Site        35          48 7.291667e-01 -0.298294948    0
+#> 1375  0X8543       Site        37          48 7.708333e-01  0.430119344    0
+#> 1376  0X8553       Site        75          96 7.812500e-01  0.865813951    0
+#> 1377  0X8568       Site       104         144 7.222222e-01 -0.726937098    0
+#> 1378  0X8630       Site        45          64 7.031250e-01 -0.870129070    0
+#> 1379  0X8702       Site        33          48 6.875000e-01 -1.026709239    0
+#> 1380  0X9048       Site        35          48 7.291667e-01 -0.298294948    0
+#> 1381  0X9121       Site        35          48 7.291667e-01 -0.298294948    0
+#> 1382  0X9166       Site       198         272 7.279412e-01 -0.761083207    0
+#> 1383  0X9201       Site       121         160 7.562500e-01  0.319823128    0
+#> 1384  0X9208       Site        70          96 7.291667e-01 -0.421852760    0
+#> 1385  0X9242       Site        22          32 6.875000e-01           NA   NA
+#> 1386  0X9252       Site       262         368 7.119565e-01 -1.659003680    0
+#> 1387  0X9280       Site        77         112 6.875000e-01 -1.568324268    0
+#> 1388  0X9377       Site       294         400 7.350000e-01 -0.566718210    0
+#> 1389  0X9392       Site       281         384 7.317708e-01 -0.714938850    0
+#> 1390  0X9427       Site        23          32 7.187500e-01           NA   NA
+#> 1391  0X9450       Site        37          48 7.708333e-01  0.430119344    0
+#> 1392  0X9490       Site       267         368 7.255435e-01 -1.001322861    0
+#> 1393  0X9544       Site        60          80 7.500000e-01  0.085092282    0
+#> 1394  0X9570       Site        12          16 7.500000e-01           NA   NA
+#> 1395  0X9766       Site        74          96 7.708333e-01  0.608280609    0
+#> 1396   0X999       Site       177         240 7.375000e-01 -0.341251006    0
+#> 1397   0X002       Site         0          64 0.000000e+00           NA   NA
+#> 1398   0X012       Site         0          64 0.000000e+00           NA   NA
+#> 1399   0X094       Site         0         256 0.000000e+00           NA   NA
+#> 1400  0X1010       Site         1         640 1.562500e-03           NA   NA
+#> 1401  0X1211       Site         0          64 0.000000e+00           NA   NA
+#> 1402  0X1259       Site         0          64 0.000000e+00           NA   NA
+#> 1403  0X1274       Site         1         576 1.736111e-03           NA   NA
+#> 1404  0X1275       Site         0         256 0.000000e+00           NA   NA
+#> 1405  0X1284       Site         2        1216 1.644737e-03           NA   NA
+#> 1406  0X1347       Site         1        1152 8.680556e-04           NA   NA
+#> 1407  0X1391       Site         1         192 5.208333e-03           NA   NA
+#> 1408  0X1437       Site         2        1408 1.420455e-03           NA   NA
+#> 1409  0X1469       Site         0         128 0.000000e+00           NA   NA
+#> 1410   0X161       Site         0         256 0.000000e+00           NA   NA
+#> 1411  0X1637       Site         0         192 0.000000e+00           NA   NA
+#> 1412  0X1662       Site         0         320 0.000000e+00           NA   NA
+#> 1413  0X1675       Site         0         704 0.000000e+00           NA   NA
+#> 1414  0X1834       Site         0         128 0.000000e+00           NA   NA
+#> 1415  0X1967       Site         0         576 0.000000e+00           NA   NA
+#> 1416  0X2116       Site         0         768 0.000000e+00           NA   NA
+#> 1417  0X2193       Site         1          64 1.562500e-02           NA   NA
+#> 1418  0X2226       Site         0         192 0.000000e+00           NA   NA
+#> 1419  0X2516       Site         1        1088 9.191176e-04           NA   NA
+#> 1420   0X259       Site         1        1024 9.765625e-04           NA   NA
+#> 1421  0X2615       Site         0         192 0.000000e+00           NA   NA
+#> 1422  0X2628       Site         4        1792 2.232143e-03           NA   NA
+#> 1423  0X2659       Site         0         128 0.000000e+00           NA   NA
+#> 1424  0X2675       Site         1         576 1.736111e-03           NA   NA
+#> 1425  0X2714       Site         0         192 0.000000e+00           NA   NA
+#> 1426  0X2725       Site         0         320 0.000000e+00           NA   NA
+#> 1427  0X2775       Site         4        1600 2.500000e-03           NA   NA
+#> 1428  0X2801       Site         5        2112 2.367424e-03           NA   NA
+#> 1429  0X2813       Site         1         576 1.736111e-03           NA   NA
+#> 1430  0X2831       Site         0          64 0.000000e+00           NA   NA
+#> 1431  0X2861       Site         1         512 1.953125e-03           NA   NA
+#> 1432  0X2908       Site         1         320 3.125000e-03           NA   NA
+#> 1433  0X3017       Site         2        1472 1.358696e-03           NA   NA
+#> 1434  0X3072       Site         0         192 0.000000e+00           NA   NA
+#> 1435  0X3250       Site         0         128 0.000000e+00           NA   NA
+#> 1436  0X3346       Site         0         192 0.000000e+00           NA   NA
+#> 1437  0X3423       Site         0         192 0.000000e+00           NA   NA
+#> 1438  0X3598       Site         2         384 5.208333e-03           NA   NA
+#> 1439  0X3599       Site         2        1728 1.157407e-03           NA   NA
+#> 1440  0X3686       Site         0         128 0.000000e+00           NA   NA
+#> 1441  0X3833       Site         0          64 0.000000e+00           NA   NA
+#> 1442  0X3869       Site         1        1216 8.223684e-04           NA   NA
+#> 1443  0X3939       Site         0          64 0.000000e+00           NA   NA
+#> 1444  0X4009       Site         1         704 1.420455e-03           NA   NA
+#> 1445  0X4050       Site         0          64 0.000000e+00           NA   NA
+#> 1446   0X412       Site         0        2112 0.000000e+00           NA   NA
+#> 1447  0X4273       Site         0         768 0.000000e+00           NA   NA
+#> 1448  0X4334       Site         4        1024 3.906250e-03           NA   NA
+#> 1449  0X4349       Site         0        1152 0.000000e+00           NA   NA
+#> 1450  0X4352       Site         0          64 0.000000e+00           NA   NA
+#> 1451  0X4487       Site         1         192 5.208333e-03           NA   NA
+#> 1452  0X4618       Site         5        2176 2.297794e-03           NA   NA
+#> 1453  0X4697       Site         1         832 1.201923e-03           NA   NA
+#> 1454  0X4747       Site         1         448 2.232143e-03           NA   NA
+#> 1455  0X4766       Site         0          64 0.000000e+00           NA   NA
+#> 1456  0X4903       Site         2        1088 1.838235e-03           NA   NA
+#> 1457  0X4908       Site         1         192 5.208333e-03           NA   NA
+#> 1458  0X4934       Site         0         896 0.000000e+00           NA   NA
+#> 1459  0X5070       Site         0         128 0.000000e+00           NA   NA
+#> 1460  0X5089       Site         0          64 0.000000e+00           NA   NA
+#> 1461  0X5132       Site         0          64 0.000000e+00           NA   NA
+#> 1462  0X5391       Site         1         128 7.812500e-03           NA   NA
+#> 1463  0X5551       Site         1        1344 7.440476e-04           NA   NA
+#> 1464  0X5616       Site         1         896 1.116071e-03           NA   NA
+#> 1465  0X5873       Site         1        1664 6.009615e-04           NA   NA
+#> 1466  0X5886       Site         1         960 1.041667e-03           NA   NA
+#> 1467  0X5900       Site         4        1152 3.472222e-03           NA   NA
+#> 1468  0X5993       Site         0        1088 0.000000e+00           NA   NA
+#> 1469  0X6051       Site         0         448 0.000000e+00           NA   NA
+#> 1470  0X6269       Site         2         128 1.562500e-02           NA   NA
+#> 1471  0X6284       Site         0          64 0.000000e+00           NA   NA
+#> 1472  0X6289       Site         1        1024 9.765625e-04           NA   NA
+#> 1473  0X6321       Site         1         320 3.125000e-03           NA   NA
+#> 1474  0X6394       Site         0         128 0.000000e+00           NA   NA
+#> 1475  0X6450       Site         0          64 0.000000e+00           NA   NA
+#> 1476  0X6457       Site         0         128 0.000000e+00           NA   NA
+#> 1477  0X6480       Site         0         384 0.000000e+00           NA   NA
+#> 1478  0X6488       Site         2         320 6.250000e-03           NA   NA
+#> 1479  0X6501       Site         0         512 0.000000e+00           NA   NA
+#> 1480  0X6505       Site         1         448 2.232143e-03           NA   NA
+#> 1481   0X652       Site         0         128 0.000000e+00           NA   NA
+#> 1482  0X6562       Site         2         192 1.041667e-02           NA   NA
+#> 1483  0X6567       Site         0         192 0.000000e+00           NA   NA
+#> 1484  0X6569       Site         1         192 5.208333e-03           NA   NA
+#> 1485  0X6580       Site         1         128 7.812500e-03           NA   NA
+#> 1486   0X664       Site         1        1024 9.765625e-04           NA   NA
+#> 1487  0X6699       Site         0         384 0.000000e+00           NA   NA
+#> 1488  0X6711       Site         1         832 1.201923e-03           NA   NA
+#> 1489  0X6747       Site         1        1792 5.580357e-04           NA   NA
+#> 1490  0X6846       Site         0         384 0.000000e+00           NA   NA
+#> 1491  0X6938       Site         0         192 0.000000e+00           NA   NA
+#> 1492  0X6995       Site         1         832 1.201923e-03           NA   NA
+#> 1493   0X700       Site         1         256 3.906250e-03           NA   NA
+#> 1494  0X7081       Site         2        1792 1.116071e-03           NA   NA
+#> 1495  0X7203       Site         0          64 0.000000e+00           NA   NA
+#> 1496  0X7218       Site         0         128 0.000000e+00           NA   NA
+#> 1497  0X7225       Site         1        1216 8.223684e-04           NA   NA
+#> 1498  0X7261       Site         5        1664 3.004808e-03           NA   NA
+#> 1499  0X7377       Site         0         384 0.000000e+00           NA   NA
+#> 1500  0X7420       Site         1         256 3.906250e-03           NA   NA
+#> 1501  0X7561       Site         0         192 0.000000e+00           NA   NA
+#> 1502  0X7633       Site         0        1216 0.000000e+00           NA   NA
+#> 1503  0X7680       Site         1        1600 6.250000e-04           NA   NA
+#> 1504  0X7772       Site         1         960 1.041667e-03           NA   NA
+#> 1505   0X781       Site         1         128 7.812500e-03           NA   NA
+#> 1506  0X7858       Site         2         768 2.604167e-03           NA   NA
+#> 1507  0X7871       Site         0         128 0.000000e+00           NA   NA
+#> 1508  0X7893       Site         0        1344 0.000000e+00           NA   NA
+#> 1509  0X7965       Site         0          64 0.000000e+00           NA   NA
+#> 1510   0X800       Site         2        1216 1.644737e-03           NA   NA
+#> 1511  0X8015       Site         0         128 0.000000e+00           NA   NA
+#> 1512  0X8090       Site         0         896 0.000000e+00           NA   NA
+#> 1513  0X8487       Site         0         128 0.000000e+00           NA   NA
+#> 1514  0X8500       Site         0         192 0.000000e+00           NA   NA
+#> 1515  0X8519       Site         0         192 0.000000e+00           NA   NA
+#> 1516  0X8543       Site         3         192 1.562500e-02           NA   NA
+#> 1517  0X8553       Site         1         384 2.604167e-03           NA   NA
+#> 1518  0X8568       Site         0         576 0.000000e+00           NA   NA
+#> 1519  0X8630       Site         0         256 0.000000e+00           NA   NA
+#> 1520  0X8702       Site         0         192 0.000000e+00           NA   NA
+#> 1521  0X9048       Site         0         192 0.000000e+00           NA   NA
+#> 1522  0X9121       Site         0         192 0.000000e+00           NA   NA
+#> 1523  0X9166       Site         4        1088 3.676471e-03           NA   NA
+#> 1524  0X9201       Site         0         640 0.000000e+00           NA   NA
+#> 1525  0X9208       Site         0         384 0.000000e+00           NA   NA
+#> 1526  0X9242       Site         0         128 0.000000e+00           NA   NA
+#> 1527  0X9252       Site         2        1472 1.358696e-03           NA   NA
+#> 1528  0X9280       Site         1         448 2.232143e-03           NA   NA
+#> 1529  0X9377       Site         3        1600 1.875000e-03           NA   NA
+#> 1530  0X9392       Site         2        1536 1.302083e-03           NA   NA
+#> 1531  0X9427       Site         1         128 7.812500e-03           NA   NA
+#> 1532  0X9450       Site         1         192 5.208333e-03           NA   NA
+#> 1533  0X9490       Site         3        1472 2.038043e-03           NA   NA
+#> 1534  0X9544       Site         2         320 6.250000e-03           NA   NA
+#> 1535  0X9570       Site         0          64 0.000000e+00           NA   NA
+#> 1536  0X9766       Site         0         384 0.000000e+00           NA   NA
+#> 1537   0X999       Site         1         960 1.041667e-03           NA   NA
+#> 1538   0X002       Site       183         256 7.148438e-01  1.429225216    0
+#> 1539   0X012       Site       161         256 6.289062e-01 -1.461335786    0
+#> 1540   0X094       Site       663        1024 6.474609e-01 -1.674474776    0
+#> 1541  0X1010       Site      1754        2560 6.851563e-01  1.361891096    0
+#> 1542  0X1211       Site       173         256 6.757812e-01  0.115333851    0
+#> 1543  0X1259       Site       188         256 7.343750e-01  2.086170898    1
+#> 1544  0X1274       Site      1532        2304 6.649306e-01 -0.748907916    0
+#> 1545  0X1275       Site       681        1024 6.650391e-01 -0.491972548    0
+#> 1546  0X1284       Site      3250        4864 6.681743e-01 -0.612552598    0
+#> 1547  0X1347       Site      3098        4608 6.723090e-01 -0.006179373    0
+#> 1548  0X1391       Site       504         768 6.562500e-01 -0.938099209    0
+#> 1549  0X1437       Site      3824        5632 6.789773e-01  1.045184359    0
+#> 1550  0X1469       Site       357         512 6.972656e-01  1.185074340    0
+#> 1551   0X161       Site       704        1024 6.875000e-01  1.019002522    0
+#> 1552  0X1637       Site       531         768 6.914062e-01  1.110054730    0
+#> 1553  0X1662       Site       896        1280 7.000000e-01  2.079423584    1
+#> 1554  0X1675       Site      1899        2816 6.743608e-01  0.224057850    0
+#> 1555  0X1834       Site       334         512 6.523438e-01 -0.951767096    0
+#> 1556  0X1967       Site      1540        2304 6.684028e-01 -0.398536886    0
+#> 1557  0X2116       Site      2095        3072 6.819661e-01  1.120174937    0
+#> 1558  0X2193       Site       173         256 6.757812e-01  0.115333851    0
+#> 1559  0X2226       Site       519         768 6.757812e-01  0.199764090    0
+#> 1560  0X2516       Site      2891        4352 6.642923e-01 -1.117793665    0
+#> 1561   0X259       Site      2742        4096 6.694336e-01 -0.392693981    0
+#> 1562  0X2615       Site       517         768 6.731771e-01  0.048048984    0
+#> 1563  0X2628       Site      4812        7168 6.713170e-01 -0.184277434    0
+#> 1564  0X2659       Site       350         512 6.835938e-01  0.534731294    0
+#> 1565  0X2675       Site      1546        2304 6.710069e-01 -0.135758613    0
+#> 1566  0X2714       Site       532         768 6.927083e-01  1.185912283    0
+#> 1567  0X2725       Site       878        1280 6.859375e-01  1.021761438    0
+#> 1568  0X2775       Site      4246        6400 6.634375e-01 -1.499279099    0
+#> 1569  0X2801       Site      5681        8448 6.724669e-01  0.022128974    0
+#> 1570  0X2813       Site      1572        2304 6.822917e-01  1.002947237    0
+#> 1571  0X2831       Site       179         256 6.992188e-01  0.903668670    0
+#> 1572  0X2861       Site      1376        2048 6.718750e-01 -0.045411204    0
+#> 1573  0X2908       Site       866        1280 6.765625e-01  0.316653340    0
+#> 1574  0X3017       Site      4011        5888 6.812160e-01  1.429810642    0
+#> 1575  0X3072       Site       537         768 6.992188e-01  1.565200050    0
+#> 1576  0X3250       Site       349         512 6.816406e-01  0.441825145    0
+#> 1577  0X3346       Site       515         768 6.705729e-01 -0.103666123    0
+#> 1578  0X3423       Site       531         768 6.914062e-01  1.110054730    0
+#> 1579  0X3598       Site      1025        1536 6.673177e-01 -0.414802988    0
+#> 1580  0X3599       Site      4626        6912 6.692708e-01 -0.538571028    0
+#> 1581  0X3686       Site       360         512 7.031250e-01  1.463792788    0
+#> 1582  0X3833       Site       177         256 6.914062e-01  0.640890397    0
+#> 1583  0X3869       Site      3299        4864 6.782484e-01  0.864441425    0
+#> 1584  0X3939       Site       175         256 6.835938e-01  0.378112124    0
+#> 1585  0X4009       Site      1902        2816 6.754261e-01  0.342903796    0
+#> 1586  0X4050       Site       176         256 6.875000e-01  0.509501261    0
+#> 1587   0X412       Site      5629        8448 6.663116e-01 -1.167210497    0
+#> 1588  0X4273       Site      2055        3072 6.689453e-01 -0.396976129    0
+#> 1589  0X4334       Site      2715        4096 6.628418e-01 -1.279570652    0
+#> 1590  0X4349       Site      3101        4608 6.729601e-01  0.086726777    0
+#> 1591  0X4352       Site       168         256 6.562500e-01 -0.541611831    0
+#> 1592  0X4487       Site       507         768 6.601562e-01 -0.710526549    0
+#> 1593  0X4618       Site      5889        8704 6.765855e-01  0.830237497    0
+#> 1594  0X4697       Site      2216        3328 6.658654e-01 -0.786703951    0
+#> 1595  0X4747       Site      1196        1792 6.674107e-01 -0.439761697    0
+#> 1596  0X4766       Site       153         256 5.976562e-01 -2.512448878    0
+#> 1597  0X4903       Site      2918        4352 6.704963e-01 -0.257396914    0
+#> 1598  0X4908       Site       521         768 6.783854e-01  0.351479197    0
+#> 1599  0X4934       Site      2415        3584 6.738281e-01  0.185733191    0
+#> 1600  0X5070       Site       349         512 6.816406e-01  0.441825145    0
+#> 1601  0X5089       Site       154         256 6.015625e-01 -2.381059741    0
+#> 1602  0X5132       Site       173         256 6.757812e-01  0.115333851    0
+#> 1603  0X5391       Site       349         512 6.816406e-01  0.441825145    0
+#> 1604  0X5551       Site      3568        5376 6.636905e-01 -1.335118806    0
+#> 1605  0X5616       Site      2464        3584 6.875000e-01  1.906379156    0
+#> 1606  0X5873       Site      4574        6656 6.871995e-01  2.546421812    1
+#> 1607  0X5886       Site      2605        3840 6.783854e-01  0.785931377    0
+#> 1608  0X5900       Site      3140        4608 6.814236e-01  1.294506718    0
+#> 1609  0X5993       Site      2921        4352 6.711857e-01 -0.161797275    0
+#> 1610  0X6051       Site      1175        1792 6.556920e-01 -1.482630637    0
+#> 1611  0X6269       Site       334         512 6.523438e-01 -0.951767096    0
+#> 1612  0X6284       Site       170         256 6.640625e-01 -0.278833558    0
+#> 1613  0X6289       Site      2801        4096 6.838379e-01  1.545295781    0
+#> 1614  0X6321       Site       865        1280 6.757812e-01  0.257894332    0
+#> 1615  0X6394       Site       335         512 6.542969e-01 -0.858860946    0
+#> 1616  0X6450       Site       170         256 6.640625e-01 -0.278833558    0
+#> 1617  0X6457       Site       327         512 6.386719e-01 -1.602110141    0
+#> 1618  0X6480       Site      1008        1536 6.562500e-01 -1.326672624    0
+#> 1619  0X6488       Site       848        1280 6.625000e-01 -0.741008806    0
+#> 1620  0X6501       Site      1332        2048 6.503906e-01 -2.089346490    0
+#> 1621  0X6505       Site      1215        1792 6.780134e-01  0.503786391    0
+#> 1622   0X652       Site       366         512 7.148438e-01  2.021229684    1
+#> 1623  0X6562       Site       515         768 6.705729e-01 -0.103666123    0
+#> 1624  0X6567       Site       529         768 6.888021e-01  0.958339624    0
+#> 1625  0X6569       Site       516         768 6.718750e-01 -0.027808569    0
+#> 1626  0X6580       Site       343         512 6.699219e-01 -0.115611751    0
+#> 1627   0X664       Site      2730        4096 6.665039e-01 -0.786861391    0
+#> 1628  0X6699       Site      1048        1536 6.822917e-01  0.818902989    0
+#> 1629  0X6711       Site      2259        3328 6.787861e-01  0.780250014    0
+#> 1630  0X6747       Site      4797        7168 6.692243e-01 -0.556730627    0
+#> 1631  0X6846       Site      1069        1536 6.959635e-01  1.945330187    0
+#> 1632  0X6938       Site       517         768 6.731771e-01  0.048048984    0
+#> 1633  0X6995       Site      2279        3328 6.847957e-01  1.509065812    0
+#> 1634   0X700       Site       717        1024 7.001953e-01  1.873031909    0
+#> 1635  0X7081       Site      4751        7168 6.628069e-01 -1.698920419    0
+#> 1636  0X7203       Site       168         256 6.562500e-01 -0.541611831    0
+#> 1637  0X7218       Site       358         512 6.992188e-01  1.277980489    0
+#> 1638  0X7225       Site      3256        4864 6.694079e-01 -0.431696187    0
+#> 1639  0X7261       Site      4470        6656 6.715745e-01 -0.133401271    0
+#> 1640  0X7377       Site      1019        1536 6.634115e-01 -0.736639331    0
+#> 1641  0X7420       Site       693        1024 6.767578e-01  0.296362271    0
+#> 1642  0X7561       Site       508         768 6.614583e-01 -0.634668996    0
+#> 1643  0X7633       Site      3263        4864 6.708470e-01 -0.220697041    0
+#> 1644  0X7680       Site      4341        6400 6.782812e-01  0.997114494    0
+#> 1645  0X7772       Site      2574        3840 6.703125e-01 -0.265729027    0
+#> 1646   0X781       Site       355         512 6.933594e-01  0.999262041    0
+#> 1647  0X7858       Site      2063        3072 6.715495e-01 -0.093545916    0
+#> 1648  0X7871       Site       356         512 6.953125e-01  1.092168191    0
+#> 1649  0X7893       Site      3600        5376 6.696429e-01 -0.417632081    0
+#> 1650  0X7965       Site       171         256 6.679688e-01 -0.147444422    0
+#> 1651   0X800       Site      3228        4864 6.636513e-01 -1.275692772    0
+#> 1652  0X8015       Site       345         512 6.738281e-01  0.070200548    0
+#> 1653  0X8090       Site      2411        3584 6.727121e-01  0.045272295    0
+#> 1654  0X8487       Site       357         512 6.972656e-01  1.185074340    0
+#> 1655  0X8500       Site       520         768 6.770833e-01  0.275621644    0
+#> 1656  0X8519       Site       526         768 6.848958e-01  0.730766964    0
+#> 1657  0X8543       Site       515         768 6.705729e-01 -0.103666123    0
+#> 1658  0X8553       Site      1015        1536 6.608073e-01 -0.951196892    0
+#> 1659  0X8568       Site      1549        2304 6.723090e-01 -0.004369476    0
+#> 1660  0X8630       Site       682        1024 6.660156e-01 -0.426277979    0
+#> 1661  0X8702       Site       503         768 6.549479e-01 -1.013956762    0
+#> 1662  0X9048       Site       524         768 6.822917e-01  0.579051857    0
+#> 1663  0X9121       Site       525         768 6.835938e-01  0.654909410    0
+#> 1664  0X9166       Site      2890        4352 6.640625e-01 -1.149660211    0
+#> 1665  0X9201       Site      1750        2560 6.835938e-01  1.195695524    0
+#> 1666  0X9208       Site      1036        1536 6.744792e-01  0.175230305    0
+#> 1667  0X9242       Site       356         512 6.953125e-01  1.092168191    0
+#> 1668  0X9252       Site      3905        5888 6.632133e-01 -1.474221411    0
+#> 1669  0X9280       Site      1222        1792 6.819196e-01  0.851409372    0
+#> 1670  0X9377       Site      4277        6400 6.682813e-01 -0.684666453    0
+#> 1671  0X9392       Site      4118        6144 6.702474e-01 -0.346851464    0
+#> 1672  0X9427       Site       331         512 6.464844e-01 -1.230485544    0
+#> 1673  0X9450       Site       519         768 6.757812e-01  0.199764090    0
+#> 1674  0X9490       Site      3947        5888 6.703465e-01 -0.323567201    0
+#> 1675  0X9544       Site       851        1280 6.648437e-01 -0.564731782    0
+#> 1676  0X9570       Site       158         256 6.171875e-01 -1.855503195    0
+#> 1677  0X9766       Site      1014        1536 6.601562e-01 -1.004836282    0
+#> 1678   0X999       Site      2559        3840 6.664062e-01 -0.774596964    0
+#> 1679   0X002       Site         3           4 7.500000e-01  2.296819768    1
+#> 1680   0X012       Site         1           2 5.000000e-01           NA   NA
+#> 1681   0X094       Site         0           4 0.000000e+00 -1.121066792    0
+#> 1682  0X1010       Site         1           8 1.250000e-01 -0.779824273    0
+#> 1683  0X1211       Site         1           2 5.000000e-01           NA   NA
+#> 1684  0X1259       Site         1           2 5.000000e-01           NA   NA
+#> 1685  0X1274       Site         1           6 1.666667e-01 -0.442789907    0
+#> 1686  0X1275       Site         0           4 0.000000e+00 -1.121066792    0
+#> 1687  0X1284       Site         2          11 1.818182e-01 -0.485036860    0
+#> 1688  0X1347       Site         3          12 2.500000e-01  0.031573084    0
+#> 1689  0X1391       Site         1           4 2.500000e-01  0.018228728    0
+#> 1690  0X1437       Site         1          11 9.090909e-02 -1.172057908    0
+#> 1691  0X1469       Site         1           3 3.333333e-01  0.344672829    0
+#> 1692   0X161       Site         0           4 0.000000e+00 -1.121066792    0
+#> 1693  0X1637       Site         1           4 2.500000e-01  0.018228728    0
+#> 1694  0X1662       Site         0           5 0.000000e+00 -1.253390777    0
+#> 1695  0X1675       Site         4           9 4.444444e-01  1.356521199    0
+#> 1696  0X1744       Site         1           1 1.000000e+00           NA   NA
+#> 1697  0X1834       Site         2           4 5.000000e-01  1.157524248    0
+#> 1698  0X1967       Site         0           6 0.000000e+00 -1.373020803    0
+#> 1699  0X2116       Site         1           8 1.250000e-01 -0.779824273    0
+#> 1700  0X2193       Site         0           1 0.000000e+00           NA   NA
+#> 1701  0X2226       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1702  0X2259       Site         2           2 1.000000e+00           NA   NA
+#> 1703  0X2516       Site         3          11 2.727273e-01  0.201984188    0
+#> 1704   0X259       Site         2          11 1.818182e-01 -0.485036860    0
+#> 1705  0X2615       Site         1           4 2.500000e-01  0.018228728    0
+#> 1706  0X2628       Site         5          18 2.777778e-01  0.307203501    0
+#> 1707  0X2659       Site         0           2 0.000000e+00           NA   NA
+#> 1708  0X2675       Site         1           7 1.428571e-01 -0.621805505    0
+#> 1709  0X2714       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1710  0X2725       Site         0           5 0.000000e+00 -1.253390777    0
+#> 1711  0X2775       Site         3          16 1.875000e-01 -0.533190303    0
+#> 1712  0X2801       Site         4          19 2.105263e-01 -0.352329884    0
+#> 1713  0X2813       Site         0           6 0.000000e+00 -1.373020803    0
+#> 1714  0X2831       Site         1           2 5.000000e-01           NA   NA
+#> 1715  0X2861       Site         0           4 0.000000e+00 -1.121066792    0
+#> 1716  0X2908       Site         1           6 1.666667e-01 -0.442789907    0
+#> 1717  0X3017       Site         4          16 2.500000e-01  0.036457457    0
+#> 1718  0X3072       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1719  0X3250       Site         0           2 0.000000e+00           NA   NA
+#> 1720  0X3346       Site         2           5 4.000000e-01  0.784643006    0
+#> 1721  0X3423       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1722  0X3598       Site         1           7 1.428571e-01 -0.621805505    0
+#> 1723  0X3599       Site         3          16 1.875000e-01 -0.533190303    0
+#> 1724  0X3686       Site         1           3 3.333333e-01  0.344672829    0
+#> 1725  0X3833       Site         1           2 5.000000e-01           NA   NA
+#> 1726  0X3869       Site         4          12 3.333333e-01  0.689345659    0
+#> 1727  0X3939       Site         0           1 0.000000e+00           NA   NA
+#> 1728  0X4009       Site         1           8 1.250000e-01 -0.779824273    0
+#> 1729  0X4050       Site         1           2 5.000000e-01           NA   NA
+#> 1730   0X412       Site         3          17 1.764706e-01 -0.653219891    0
+#> 1731  0X4273       Site         2          11 1.818182e-01 -0.485036860    0
+#> 1732  0X4334       Site         2          10 2.000000e-01 -0.331454727    0
+#> 1733  0X4349       Site         3          12 2.500000e-01  0.031573084    0
+#> 1734  0X4352       Site         1           2 5.000000e-01           NA   NA
+#> 1735  0X4487       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1736  0X4522       Site         4           4 1.000000e+00  3.436115288    2
+#> 1737  0X4618       Site         3          18 1.666667e-01 -0.766934616    0
+#> 1738  0X4697       Site         2          10 2.000000e-01 -0.331454727    0
+#> 1739  0X4747       Site         1           5 2.000000e-01 -0.234373885    0
+#> 1740  0X4766       Site         1           2 5.000000e-01           NA   NA
+#> 1741  0X4903       Site         2          10 2.000000e-01 -0.331454727    0
+#> 1742  0X4908       Site         1           4 2.500000e-01  0.018228728    0
+#> 1743  0X4934       Site         2          11 1.818182e-01 -0.485036860    0
+#> 1744  0X5070       Site         1           3 3.333333e-01  0.344672829    0
+#> 1745  0X5089       Site         0           1 0.000000e+00           NA   NA
+#> 1746  0X5132       Site         0           1 0.000000e+00           NA   NA
+#> 1747  0X5391       Site         0           2 0.000000e+00           NA   NA
+#> 1748  0X5551       Site         1          10 1.000000e-01 -1.052008481    0
+#> 1749  0X5616       Site         0          10 0.000000e+00 -1.772562235    0
+#> 1750   0X582       Site         2           2 1.000000e+00           NA   NA
+#> 1751  0X5873       Site         3          16 1.875000e-01 -0.533190303    0
+#> 1752  0X5886       Site         1          10 1.000000e-01 -1.052008481    0
+#> 1753  0X5900       Site         8          16 5.000000e-01  2.315048496    1
+#> 1754  0X5993       Site         3          10 3.000000e-01  0.389099027    0
+#> 1755  0X6051       Site         0           4 0.000000e+00 -1.121066792    0
+#> 1756  0X6269       Site         0           2 0.000000e+00           NA   NA
+#> 1757  0X6284       Site         0           1 0.000000e+00           NA   NA
+#> 1758  0X6289       Site         4          11 3.636364e-01  0.889005236    0
+#> 1759  0X6321       Site         2           5 4.000000e-01  0.784643006    0
+#> 1760  0X6394       Site         1           3 3.333333e-01  0.344672829    0
+#> 1761  0X6450       Site         1           2 5.000000e-01           NA   NA
+#> 1762  0X6457       Site         2           4 5.000000e-01  1.157524248    0
+#> 1763  0X6480       Site         3           6 5.000000e-01  1.417671886    0
+#> 1764  0X6488       Site         0           5 0.000000e+00 -1.253390777    0
+#> 1765  0X6501       Site         1           6 1.666667e-01 -0.442789907    0
+#> 1766  0X6505       Site         0           4 0.000000e+00 -1.121066792    0
+#> 1767   0X652       Site         2           4 5.000000e-01  1.157524248    0
+#> 1768  0X6562       Site         4           7 5.714286e-01  1.961873879    0
+#> 1769  0X6567       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1770  0X6569       Site         2           5 4.000000e-01  0.784643006    0
+#> 1771  0X6580       Site         0           2 0.000000e+00           NA   NA
+#> 1772   0X664       Site         1          10 1.000000e-01 -1.052008481    0
+#> 1773  0X6699       Site         2           6 3.333333e-01  0.487440990    0
+#> 1774  0X6711       Site         5          12 4.166667e-01  1.347118234    0
+#> 1775  0X6747       Site         5          18 2.777778e-01  0.307203501    0
+#> 1776  0X6846       Site         1           4 2.500000e-01  0.018228728    0
+#> 1777  0X6938       Site         1           4 2.500000e-01  0.018228728    0
+#> 1778  0X6995       Site         3          10 3.000000e-01  0.389099027    0
+#> 1779   0X700       Site         1           5 2.000000e-01 -0.234373885    0
+#> 1780  0X7081       Site         2          16 1.250000e-01 -1.102838063    0
+#> 1781  0X7203       Site         0           1 0.000000e+00           NA   NA
+#> 1782  0X7218       Site         1           3 3.333333e-01  0.344672829    0
+#> 1783  0X7225       Site         6          16 3.750000e-01  1.175752976    0
+#> 1784  0X7261       Site         7          18 3.888889e-01  1.381341619    0
+#> 1785  0X7377       Site         0           6 0.000000e+00 -1.373020803    0
+#> 1786  0X7420       Site         2           6 3.333333e-01  0.487440990    0
+#> 1787  0X7561       Site         3           6 5.000000e-01  1.417671886    0
+#> 1788  0X7633       Site         3          12 2.500000e-01  0.031573084    0
+#> 1789  0X7680       Site         4          17 2.352941e-01 -0.100580389    0
+#> 1790  0X7772       Site         6          13 4.615385e-01  1.770772790    0
+#> 1791  0X7792       Site         2           2 1.000000e+00           NA   NA
+#> 1792   0X781       Site         2           4 5.000000e-01  1.157524248    0
+#> 1793  0X7858       Site         1           9 1.111111e-01 -0.922069841    0
+#> 1794  0X7871       Site         0           2 0.000000e+00           NA   NA
+#> 1795  0X7893       Site         4          13 3.076923e-01  0.506837894    0
+#> 1796  0X7965       Site         0           1 0.000000e+00           NA   NA
+#> 1797   0X800       Site         3          15 2.000000e-01 -0.405947477    0
+#> 1798  0X8015       Site         0           2 0.000000e+00           NA   NA
+#> 1799  0X8090       Site         4          13 3.076923e-01  0.506837894    0
+#> 1800  0X8487       Site         1           3 3.333333e-01  0.344672829    0
+#> 1801  0X8500       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1802  0X8519       Site         1           4 2.500000e-01  0.018228728    0
+#> 1803  0X8543       Site         2           5 4.000000e-01  0.784643006    0
+#> 1804  0X8553       Site         5           9 5.555556e-01  2.116051545    1
+#> 1805  0X8568       Site         2           7 2.857143e-01  0.239420956    0
+#> 1806  0X8630       Site         1           5 2.000000e-01 -0.234373885    0
+#> 1807  0X8702       Site         1           4 2.500000e-01  0.018228728    0
+#> 1808  0X8983       Site         1           1 1.000000e+00           NA   NA
+#> 1809  0X9048       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1810  0X9121       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1811  0X9166       Site         4          12 3.333333e-01  0.689345659    0
+#> 1812  0X9201       Site         1           7 1.428571e-01 -0.621805505    0
+#> 1813  0X9208       Site         2           6 3.333333e-01  0.487440990    0
+#> 1814  0X9242       Site         2           4 5.000000e-01  1.157524248    0
+#> 1815  0X9252       Site         3          14 2.142857e-01 -0.270386708    0
+#> 1816  0X9280       Site         1           5 2.000000e-01 -0.234373885    0
+#> 1817  0X9377       Site         5          17 2.941176e-01  0.452059113    0
+#> 1818  0X9392       Site         5          14 3.571429e-01  0.947571435    0
+#> 1819  0X9427       Site         1           3 3.333333e-01  0.344672829    0
+#> 1820  0X9450       Site         0           3 0.000000e+00 -0.970872321    0
+#> 1821  0X9490       Site         3          16 1.875000e-01 -0.533190303    0
+#> 1822  0X9537       Site         1           1 1.000000e+00           NA   NA
+#> 1823  0X9544       Site         0           5 0.000000e+00 -1.253390777    0
+#> 1824  0X9570       Site         0           1 0.000000e+00           NA   NA
+#> 1825  0X9766       Site         1           5 2.000000e-01 -0.234373885    0
+#> 1826   0X999       Site         0           8 0.000000e+00 -1.585427861    0
+#> 1827   0X002       Site         7           7 1.000000e+00           NA   NA
+#> 1828   0X012       Site         7           9 7.777778e-01           NA   NA
+#> 1829   0X094       Site        19          21 9.047619e-01           NA   NA
+#> 1830  0X1010       Site        23          23 1.000000e+00           NA   NA
+#> 1831  0X1274       Site        57          59 9.661017e-01           NA   NA
+#> 1832  0X1275       Site        18          18 1.000000e+00           NA   NA
+#> 1833  0X1284       Site        79          84 9.404762e-01  0.940476190    0
+#> 1834  0X1347       Site        84          89 9.438202e-01  0.943820225    0
+#> 1835  0X1391       Site        17          17 1.000000e+00           NA   NA
+#> 1836  0X1437       Site        81          82 9.878049e-01           NA   NA
+#> 1837  0X1469       Site         5           5 1.000000e+00           NA   NA
+#> 1838   0X161       Site         4           4 1.000000e+00           NA   NA
+#> 1839  0X1637       Site        13          14 9.285714e-01           NA   NA
+#> 1840  0X1662       Site         6           6 1.000000e+00           NA   NA
+#> 1841  0X1675       Site        35          38 9.210526e-01  0.921052632    0
+#> 1842  0X1834       Site         3           3 1.000000e+00           NA   NA
+#> 1843  0X1967       Site        45          46 9.782609e-01           NA   NA
+#> 1844  0X2116       Site        57          59 9.661017e-01           NA   NA
+#> 1845  0X2193       Site        11          11 1.000000e+00           NA   NA
+#> 1846  0X2226       Site        17          17 1.000000e+00           NA   NA
+#> 1847  0X2516       Site        63          65 9.692308e-01           NA   NA
+#> 1848   0X259       Site        58          62 9.354839e-01  0.935483871    0
+#> 1849  0X2615       Site         9           9 1.000000e+00           NA   NA
+#> 1850  0X2628       Site       114         123 9.268293e-01  0.926829268    0
+#> 1851  0X2659       Site         3           3 1.000000e+00           NA   NA
+#> 1852  0X2675       Site        37          38 9.736842e-01           NA   NA
+#> 1853  0X2714       Site        11          11 1.000000e+00           NA   NA
+#> 1854  0X2725       Site        17          17 1.000000e+00           NA   NA
+#> 1855  0X2775       Site       128         139 9.208633e-01  0.920863309    0
+#> 1856  0X2801       Site       130         140 9.285714e-01  0.928571429    0
+#> 1857  0X2813       Site        21          23 9.130435e-01           NA   NA
+#> 1858  0X2831       Site         5           5 1.000000e+00           NA   NA
+#> 1859  0X2861       Site        26          27 9.629630e-01           NA   NA
+#> 1860  0X2908       Site        25          27 9.259259e-01           NA   NA
+#> 1861  0X3017       Site        83          91 9.120879e-01  0.912087912    0
+#> 1862  0X3250       Site         6           8 7.500000e-01           NA   NA
+#> 1863  0X3346       Site        10          10 1.000000e+00           NA   NA
+#> 1864  0X3423       Site        11          11 1.000000e+00           NA   NA
+#> 1865  0X3598       Site        40          40 1.000000e+00           NA   NA
+#> 1866  0X3599       Site        81          82 9.878049e-01           NA   NA
+#> 1867  0X3686       Site        16          16 1.000000e+00           NA   NA
+#> 1868  0X3869       Site        87          89 9.775281e-01           NA   NA
+#> 1869  0X3939       Site         6           6 1.000000e+00           NA   NA
+#> 1870  0X4009       Site        51          54 9.444444e-01  0.944444444    0
+#> 1871   0X412       Site       155         167 9.281437e-01  0.928143713    0
+#> 1872  0X4273       Site        53          53 1.000000e+00           NA   NA
+#> 1873  0X4334       Site        74          83 8.915663e-01  0.891566265   -1
+#> 1874  0X4349       Site        67          71 9.436620e-01  0.943661972    0
+#> 1875  0X4487       Site        21          21 1.000000e+00           NA   NA
+#> 1876  0X4618       Site       186         200 9.300000e-01  0.930000000    0
+#> 1877  0X4697       Site        59          63 9.365079e-01  0.936507937    0
+#> 1878  0X4747       Site        25          26 9.615385e-01           NA   NA
+#> 1879  0X4766       Site         3           4 7.500000e-01           NA   NA
+#> 1880  0X4903       Site        89          93 9.569892e-01  0.956989247    0
+#> 1881  0X4908       Site         6           6 1.000000e+00           NA   NA
+#> 1882  0X4934       Site        42          46 9.130435e-01  0.913043478    0
+#> 1883  0X5070       Site         8           8 1.000000e+00           NA   NA
+#> 1884  0X5089       Site        13          13 1.000000e+00           NA   NA
+#> 1885  0X5132       Site         7           7 1.000000e+00           NA   NA
+#> 1886  0X5391       Site         2           2 1.000000e+00           NA   NA
+#> 1887  0X5551       Site       140         145 9.655172e-01  0.965517241    0
+#> 1888  0X5616       Site        36          38 9.473684e-01           NA   NA
+#> 1889  0X5873       Site       131         137 9.562044e-01  0.956204380    0
+#> 1890  0X5886       Site        63          63 1.000000e+00           NA   NA
+#> 1891  0X5900       Site        93          98 9.489796e-01  0.948979592    0
+#> 1892  0X5993       Site        89          93 9.569892e-01  0.956989247    0
+#> 1893  0X6051       Site        16          17 9.411765e-01           NA   NA
+#> 1894  0X6269       Site         6           6 1.000000e+00           NA   NA
+#> 1895  0X6289       Site       107         113 9.469027e-01  0.946902655    0
+#> 1896  0X6321       Site        28          30 9.333333e-01           NA   NA
+#> 1897  0X6394       Site        12          12 1.000000e+00           NA   NA
+#> 1898  0X6450       Site         9           9 1.000000e+00           NA   NA
+#> 1899  0X6457       Site        11          11 1.000000e+00           NA   NA
+#> 1900  0X6480       Site         6           7 8.571429e-01           NA   NA
+#> 1901  0X6488       Site         9           9 1.000000e+00           NA   NA
+#> 1902  0X6501       Site        35          37 9.459459e-01           NA   NA
+#> 1903  0X6505       Site        41          41 1.000000e+00           NA   NA
+#> 1904   0X652       Site         8           8 1.000000e+00           NA   NA
+#> 1905  0X6562       Site        21          22 9.545455e-01           NA   NA
+#> 1906  0X6567       Site         9           9 1.000000e+00           NA   NA
+#> 1907  0X6569       Site        11          12 9.166667e-01           NA   NA
+#> 1908  0X6580       Site        18          19 9.473684e-01           NA   NA
+#> 1909   0X664       Site        77          77 1.000000e+00           NA   NA
+#> 1910  0X6699       Site        31          32 9.687500e-01           NA   NA
+#> 1911  0X6711       Site        54          57 9.473684e-01  0.947368421    0
+#> 1912  0X6747       Site       161         170 9.470588e-01  0.947058824    0
+#> 1913  0X6846       Site        17          17 1.000000e+00           NA   NA
+#> 1914  0X6938       Site        13          13 1.000000e+00           NA   NA
+#> 1915  0X6995       Site        48          52 9.230769e-01  0.923076923    0
+#> 1916   0X700       Site         8           8 1.000000e+00           NA   NA
+#> 1917  0X7081       Site       124         129 9.612403e-01  0.961240310    0
+#> 1918  0X7218       Site         4           4 1.000000e+00           NA   NA
+#> 1919  0X7225       Site        96         102 9.411765e-01  0.941176471    0
+#> 1920  0X7261       Site        99         106 9.339623e-01  0.933962264    0
+#> 1921  0X7377       Site        16          16 1.000000e+00           NA   NA
+#> 1922  0X7420       Site        21          22 9.545455e-01           NA   NA
+#> 1923  0X7561       Site         4           5 8.000000e-01           NA   NA
+#> 1924  0X7633       Site       110         115 9.565217e-01  0.956521739    0
+#> 1925  0X7680       Site       117         124 9.435484e-01  0.943548387    0
+#> 1926  0X7772       Site        54          56 9.642857e-01           NA   NA
+#> 1927   0X781       Site        19          19 1.000000e+00           NA   NA
+#> 1928  0X7858       Site        64          64 1.000000e+00           NA   NA
+#> 1929  0X7871       Site         6           6 1.000000e+00           NA   NA
+#> 1930  0X7893       Site       104         107 9.719626e-01  0.971962617    0
+#> 1931   0X800       Site        72          74 9.729730e-01           NA   NA
+#> 1932  0X8015       Site         6           7 8.571429e-01           NA   NA
+#> 1933  0X8090       Site        76          80 9.500000e-01  0.950000000    0
+#> 1934  0X8487       Site         8           8 1.000000e+00           NA   NA
+#> 1935  0X8500       Site         4           4 1.000000e+00           NA   NA
+#> 1936  0X8519       Site         4           4 1.000000e+00           NA   NA
+#> 1937  0X8543       Site        11          11 1.000000e+00           NA   NA
+#> 1938  0X8553       Site        38          40 9.500000e-01           NA   NA
+#> 1939  0X8568       Site        43          45 9.555556e-01           NA   NA
+#> 1940  0X8630       Site        11          12 9.166667e-01           NA   NA
+#> 1941  0X9048       Site        21          21 1.000000e+00           NA   NA
+#> 1942  0X9121       Site        28          31 9.032258e-01  0.903225806    0
+#> 1943  0X9166       Site        72          75 9.600000e-01  0.960000000    0
+#> 1944  0X9201       Site        35          35 1.000000e+00           NA   NA
+#> 1945  0X9208       Site        26          29 8.965517e-01  0.896551724   -1
+#> 1946  0X9242       Site        19          19 1.000000e+00           NA   NA
+#> 1947  0X9252       Site       106         111 9.549550e-01  0.954954955    0
+#> 1948  0X9280       Site        10          11 9.090909e-01           NA   NA
+#> 1949  0X9377       Site       129         136 9.485294e-01  0.948529412    0
+#> 1950  0X9392       Site        93         100 9.300000e-01  0.930000000    0
+#> 1951  0X9450       Site        10          11 9.090909e-01           NA   NA
+#> 1952  0X9490       Site       109         115 9.478261e-01  0.947826087    0
+#> 1953  0X9544       Site        31          32 9.687500e-01           NA   NA
+#> 1954  0X9766       Site        14          14 1.000000e+00           NA   NA
+#> 1955   0X999       Site        93          97 9.587629e-01  0.958762887    0
+#> 1956   0X002       Site         0           1 0.000000e+00           NA   NA
+#> 1957   0X012       Site         1           1 1.000000e+00           NA   NA
+#> 1958   0X094       Site         1           4 2.500000e-01  1.000000000    0
+#> 1959  0X1010       Site         4           7 5.714286e-01  4.000000000    2
+#> 1960  0X1211       Site         1           1 1.000000e+00           NA   NA
+#> 1961  0X1259       Site         0           1 0.000000e+00           NA   NA
+#> 1962  0X1274       Site         4           5 8.000000e-01  4.000000000    2
+#> 1963  0X1275       Site         0           4 0.000000e+00  0.000000000    0
+#> 1964  0X1284       Site         3           9 3.333333e-01  3.000000000    2
+#> 1965  0X1347       Site         1           9 1.111111e-01  1.000000000    0
+#> 1966  0X1391       Site         1           3 3.333333e-01  1.000000000    0
+#> 1967  0X1437       Site         3          10 3.000000e-01  3.000000000    2
+#> 1968  0X1469       Site         0           2 0.000000e+00           NA   NA
+#> 1969   0X161       Site         0           4 0.000000e+00  0.000000000    0
+#> 1970  0X1637       Site         2           3 6.666667e-01  2.000000000    1
+#> 1971  0X1662       Site         3           5 6.000000e-01  3.000000000    2
+#> 1972  0X1675       Site         2           5 4.000000e-01  2.000000000    1
+#> 1973  0X1834       Site         0           2 0.000000e+00           NA   NA
+#> 1974  0X1967       Site         0           6 0.000000e+00  0.000000000    0
+#> 1975  0X2116       Site         1           7 1.428571e-01  1.000000000    0
+#> 1976  0X2193       Site         0           1 0.000000e+00           NA   NA
+#> 1977  0X2226       Site         1           3 3.333333e-01  1.000000000    0
+#> 1978  0X2516       Site         5           8 6.250000e-01  5.000000000    2
+#> 1979   0X259       Site         5           9 5.555556e-01  5.000000000    2
+#> 1980  0X2615       Site         0           3 0.000000e+00  0.000000000    0
+#> 1981  0X2628       Site         8          13 6.153846e-01  8.000000000    2
+#> 1982  0X2659       Site         0           2 0.000000e+00           NA   NA
+#> 1983  0X2675       Site         1           6 1.666667e-01  1.000000000    0
+#> 1984  0X2714       Site         0           3 0.000000e+00  0.000000000    0
+#> 1985  0X2725       Site         1           5 2.000000e-01  1.000000000    0
+#> 1986  0X2775       Site         6          13 4.615385e-01  6.000000000    2
+#> 1987  0X2801       Site         7          15 4.666667e-01  7.000000000    2
+#> 1988  0X2813       Site         3           6 5.000000e-01  3.000000000    2
+#> 1989  0X2831       Site         1           1 1.000000e+00           NA   NA
+#> 1990  0X2861       Site         3           4 7.500000e-01  3.000000000    2
+#> 1991  0X2908       Site         2           5 4.000000e-01  2.000000000    1
+#> 1992  0X3017       Site         5          12 4.166667e-01  5.000000000    2
+#> 1993  0X3072       Site         1           3 3.333333e-01  1.000000000    0
+#> 1994  0X3250       Site         0           2 0.000000e+00           NA   NA
+#> 1995  0X3346       Site         1           3 3.333333e-01  1.000000000    0
+#> 1996  0X3423       Site         0           3 0.000000e+00  0.000000000    0
+#> 1997  0X3598       Site         3           6 5.000000e-01  3.000000000    2
+#> 1998  0X3599       Site         6          13 4.615385e-01  6.000000000    2
+#> 1999  0X3686       Site         0           2 0.000000e+00           NA   NA
+#> 2000  0X3833       Site         0           1 0.000000e+00           NA   NA
+#> 2001  0X3869       Site         4           8 5.000000e-01  4.000000000    2
+#> 2002  0X3939       Site         0           1 0.000000e+00           NA   NA
+#> 2003  0X4009       Site         3           7 4.285714e-01  3.000000000    2
+#> 2004  0X4050       Site         1           1 1.000000e+00           NA   NA
+#> 2005   0X412       Site         6          14 4.285714e-01  6.000000000    2
+#> 2006  0X4273       Site         1           9 1.111111e-01  1.000000000    0
+#> 2007  0X4334       Site         4           8 5.000000e-01  4.000000000    2
+#> 2008  0X4349       Site         4           9 4.444444e-01  4.000000000    2
+#> 2009  0X4352       Site         0           1 0.000000e+00           NA   NA
+#> 2010  0X4487       Site         1           3 3.333333e-01  1.000000000    0
+#> 2011  0X4618       Site         5          15 3.333333e-01  5.000000000    2
+#> 2012  0X4697       Site         5           8 6.250000e-01  5.000000000    2
+#> 2013  0X4747       Site         3           4 7.500000e-01  3.000000000    2
+#> 2014  0X4766       Site         0           1 0.000000e+00           NA   NA
+#> 2015  0X4903       Site         3           8 3.750000e-01  3.000000000    2
+#> 2016  0X4908       Site         1           3 3.333333e-01  1.000000000    0
+#> 2017  0X4934       Site         2           9 2.222222e-01  2.000000000    1
+#> 2018  0X5070       Site         1           2 5.000000e-01           NA   NA
+#> 2019  0X5089       Site         0           1 0.000000e+00           NA   NA
+#> 2020  0X5132       Site         0           1 0.000000e+00           NA   NA
+#> 2021  0X5391       Site         0           2 0.000000e+00           NA   NA
+#> 2022  0X5551       Site         5           9 5.555556e-01  5.000000000    2
+#> 2023  0X5616       Site         5          10 5.000000e-01  5.000000000    2
+#> 2024  0X5873       Site         8          13 6.153846e-01  8.000000000    2
+#> 2025  0X5886       Site         1           9 1.111111e-01  1.000000000    0
+#> 2026  0X5900       Site         4           8 5.000000e-01  4.000000000    2
+#> 2027  0X5993       Site         5           7 7.142857e-01  5.000000000    2
+#> 2028  0X6051       Site         2           4 5.000000e-01  2.000000000    1
+#> 2029  0X6269       Site         0           2 0.000000e+00           NA   NA
+#> 2030  0X6284       Site         0           1 0.000000e+00           NA   NA
+#> 2031  0X6289       Site         4           7 5.714286e-01  4.000000000    2
+#> 2032  0X6321       Site         0           3 0.000000e+00  0.000000000    0
+#> 2033  0X6394       Site         1           2 5.000000e-01           NA   NA
+#> 2034  0X6450       Site         0           1 0.000000e+00           NA   NA
+#> 2035  0X6457       Site         0           2 0.000000e+00           NA   NA
+#> 2036  0X6480       Site         2           3 6.666667e-01  2.000000000    1
+#> 2037  0X6488       Site         3           5 6.000000e-01  3.000000000    2
+#> 2038  0X6501       Site         2           5 4.000000e-01  2.000000000    1
+#> 2039  0X6505       Site         2           4 5.000000e-01  2.000000000    1
+#> 2040   0X652       Site         2           2 1.000000e+00           NA   NA
+#> 2041  0X6562       Site         0           3 0.000000e+00  0.000000000    0
+#> 2042  0X6567       Site         0           3 0.000000e+00  0.000000000    0
+#> 2043  0X6569       Site         1           3 3.333333e-01  1.000000000    0
+#> 2044  0X6580       Site         1           2 5.000000e-01           NA   NA
+#> 2045   0X664       Site         5           9 5.555556e-01  5.000000000    2
+#> 2046  0X6699       Site         1           4 2.500000e-01  1.000000000    0
+#> 2047  0X6711       Site         2           7 2.857143e-01  2.000000000    1
+#> 2048  0X6747       Site         4          13 3.076923e-01  4.000000000    2
+#> 2049  0X6846       Site         1           3 3.333333e-01  1.000000000    0
+#> 2050  0X6938       Site         1           3 3.333333e-01  1.000000000    0
+#> 2051  0X6995       Site         2           7 2.857143e-01  2.000000000    1
+#> 2052   0X700       Site         2           4 5.000000e-01  2.000000000    1
+#> 2053  0X7081       Site         4          14 2.857143e-01  4.000000000    2
+#> 2054  0X7203       Site         0           1 0.000000e+00           NA   NA
+#> 2055  0X7218       Site         0           2 0.000000e+00           NA   NA
+#> 2056  0X7225       Site         4          10 4.000000e-01  4.000000000    2
+#> 2057  0X7261       Site         7          11 6.363636e-01  7.000000000    2
+#> 2058  0X7377       Site         5           6 8.333333e-01  5.000000000    2
+#> 2059  0X7420       Site         0           4 0.000000e+00  0.000000000    0
+#> 2060  0X7561       Site         1           3 3.333333e-01  1.000000000    0
+#> 2061  0X7633       Site         1           9 1.111111e-01  1.000000000    0
+#> 2062  0X7680       Site         5          13 3.846154e-01  5.000000000    2
+#> 2063  0X7772       Site         4           7 5.714286e-01  4.000000000    2
+#> 2064   0X781       Site         0           2 0.000000e+00           NA   NA
+#> 2065  0X7858       Site         4           8 5.000000e-01  4.000000000    2
+#> 2066  0X7871       Site         1           2 5.000000e-01           NA   NA
+#> 2067  0X7893       Site         3           9 3.333333e-01  3.000000000    2
+#> 2068  0X7965       Site         0           1 0.000000e+00           NA   NA
+#> 2069   0X800       Site         6          12 5.000000e-01  6.000000000    2
+#> 2070  0X8015       Site         1           2 5.000000e-01           NA   NA
+#> 2071  0X8090       Site         2           9 2.222222e-01  2.000000000    1
+#> 2072  0X8487       Site         1           2 5.000000e-01           NA   NA
+#> 2073  0X8500       Site         0           3 0.000000e+00  0.000000000    0
+#> 2074  0X8519       Site         1           3 3.333333e-01  1.000000000    0
+#> 2075  0X8543       Site         2           3 6.666667e-01  2.000000000    1
+#> 2076  0X8553       Site         1           4 2.500000e-01  1.000000000    0
+#> 2077  0X8568       Site         2           5 4.000000e-01  2.000000000    1
+#> 2078  0X8630       Site         1           4 2.500000e-01  1.000000000    0
+#> 2079  0X8702       Site         2           3 6.666667e-01  2.000000000    1
+#> 2080  0X9048       Site         0           3 0.000000e+00  0.000000000    0
+#> 2081  0X9121       Site         2           3 6.666667e-01  2.000000000    1
+#> 2082  0X9166       Site         4           8 5.000000e-01  4.000000000    2
+#> 2083  0X9201       Site         4           6 6.666667e-01  4.000000000    2
+#> 2084  0X9208       Site         1           4 2.500000e-01  1.000000000    0
+#> 2085  0X9242       Site         0           2 0.000000e+00           NA   NA
+#> 2086  0X9252       Site         6          11 5.454545e-01  6.000000000    2
+#> 2087  0X9280       Site         2           4 5.000000e-01  2.000000000    1
+#> 2088  0X9377       Site         3          12 2.500000e-01  3.000000000    2
+#> 2089  0X9392       Site         7           9 7.777778e-01  7.000000000    2
+#> 2090  0X9427       Site         0           2 0.000000e+00           NA   NA
+#> 2091  0X9450       Site         2           3 6.666667e-01  2.000000000    1
+#> 2092  0X9490       Site         6          13 4.615385e-01  6.000000000    2
+#> 2093  0X9544       Site         2           5 4.000000e-01  2.000000000    1
+#> 2094  0X9570       Site         0           1 0.000000e+00           NA   NA
+#> 2095  0X9766       Site         2           4 5.000000e-01  2.000000000    1
+#> 2096   0X999       Site         3           8 3.750000e-01  3.000000000    2
+#> 2097   0X002       Site         0           1 0.000000e+00  0.000000000    0
+#> 2098   0X012       Site         0           1 0.000000e+00  0.000000000    0
+#> 2099   0X094       Site         0           4 0.000000e+00  0.000000000    0
+#> 2100  0X1010       Site         0           7 0.000000e+00  0.000000000    0
+#> 2101  0X1211       Site         0           1 0.000000e+00  0.000000000    0
+#> 2102  0X1259       Site         0           1 0.000000e+00  0.000000000    0
+#> 2103  0X1274       Site         0           5 0.000000e+00  0.000000000    0
+#> 2104  0X1275       Site         0           4 0.000000e+00  0.000000000    0
+#> 2105  0X1284       Site         0           9 0.000000e+00  0.000000000    0
+#> 2106  0X1347       Site         0           9 0.000000e+00  0.000000000    0
+#> 2107  0X1391       Site         0           3 0.000000e+00  0.000000000    0
+#> 2108  0X1437       Site         0          10 0.000000e+00  0.000000000    0
+#> 2109  0X1469       Site         0           2 0.000000e+00  0.000000000    0
+#> 2110   0X161       Site         0           4 0.000000e+00  0.000000000    0
+#> 2111  0X1637       Site         0           3 0.000000e+00  0.000000000    0
+#> 2112  0X1662       Site         0           5 0.000000e+00  0.000000000    0
+#> 2113  0X1675       Site         0           5 0.000000e+00  0.000000000    0
+#> 2114  0X1834       Site         0           2 0.000000e+00  0.000000000    0
+#> 2115  0X1967       Site         1           6 1.666667e-01  1.000000000    1
+#> 2116  0X2116       Site         0           7 0.000000e+00  0.000000000    0
+#> 2117  0X2193       Site         0           1 0.000000e+00  0.000000000    0
+#> 2118  0X2226       Site         0           3 0.000000e+00  0.000000000    0
+#> 2119  0X2516       Site         0           8 0.000000e+00  0.000000000    0
+#> 2120   0X259       Site         0           9 0.000000e+00  0.000000000    0
+#> 2121  0X2615       Site         0           3 0.000000e+00  0.000000000    0
+#> 2122  0X2628       Site         0          13 0.000000e+00  0.000000000    0
+#> 2123  0X2659       Site         0           2 0.000000e+00  0.000000000    0
+#> 2124  0X2675       Site         0           6 0.000000e+00  0.000000000    0
+#> 2125  0X2714       Site         0           3 0.000000e+00  0.000000000    0
+#> 2126  0X2725       Site         0           5 0.000000e+00  0.000000000    0
+#> 2127  0X2775       Site         0          13 0.000000e+00  0.000000000    0
+#> 2128  0X2801       Site         1          15 6.666667e-02  1.000000000    1
+#> 2129  0X2813       Site         0           6 0.000000e+00  0.000000000    0
+#> 2130  0X2831       Site         0           1 0.000000e+00  0.000000000    0
+#> 2131  0X2861       Site         0           4 0.000000e+00  0.000000000    0
+#> 2132  0X2908       Site         0           5 0.000000e+00  0.000000000    0
+#> 2133  0X3017       Site         0          12 0.000000e+00  0.000000000    0
+#> 2134  0X3072       Site         0           3 0.000000e+00  0.000000000    0
+#> 2135  0X3250       Site         0           2 0.000000e+00  0.000000000    0
+#> 2136  0X3346       Site         0           3 0.000000e+00  0.000000000    0
+#> 2137  0X3423       Site         0           3 0.000000e+00  0.000000000    0
+#> 2138  0X3598       Site         0           6 0.000000e+00  0.000000000    0
+#> 2139  0X3599       Site         0          13 0.000000e+00  0.000000000    0
+#> 2140  0X3686       Site         0           2 0.000000e+00  0.000000000    0
+#> 2141  0X3833       Site         0           1 0.000000e+00  0.000000000    0
+#> 2142  0X3869       Site         0           8 0.000000e+00  0.000000000    0
+#> 2143  0X3939       Site         0           1 0.000000e+00  0.000000000    0
+#> 2144  0X4009       Site         0           7 0.000000e+00  0.000000000    0
+#> 2145  0X4050       Site         0           1 0.000000e+00  0.000000000    0
+#> 2146   0X412       Site         1          14 7.142857e-02  1.000000000    1
+#> 2147  0X4273       Site         0           9 0.000000e+00  0.000000000    0
+#> 2148  0X4334       Site         0           8 0.000000e+00  0.000000000    0
+#> 2149  0X4349       Site         0           9 0.000000e+00  0.000000000    0
+#> 2150  0X4352       Site         0           1 0.000000e+00  0.000000000    0
+#> 2151  0X4487       Site         0           3 0.000000e+00  0.000000000    0
+#> 2152  0X4618       Site         0          15 0.000000e+00  0.000000000    0
+#> 2153  0X4697       Site         0           8 0.000000e+00  0.000000000    0
+#> 2154  0X4747       Site         0           4 0.000000e+00  0.000000000    0
+#> 2155  0X4766       Site         0           1 0.000000e+00  0.000000000    0
+#> 2156  0X4903       Site         0           8 0.000000e+00  0.000000000    0
+#> 2157  0X4908       Site         0           3 0.000000e+00  0.000000000    0
+#> 2158  0X4934       Site         0           9 0.000000e+00  0.000000000    0
+#> 2159  0X5070       Site         0           2 0.000000e+00  0.000000000    0
+#> 2160  0X5089       Site         0           1 0.000000e+00  0.000000000    0
+#> 2161  0X5132       Site         0           1 0.000000e+00  0.000000000    0
+#> 2162  0X5391       Site         0           2 0.000000e+00  0.000000000    0
+#> 2163  0X5551       Site         0           9 0.000000e+00  0.000000000    0
+#> 2164  0X5616       Site         0          10 0.000000e+00  0.000000000    0
+#> 2165  0X5873       Site         2          13 1.538462e-01  2.000000000    2
+#> 2166  0X5886       Site         0           9 0.000000e+00  0.000000000    0
+#> 2167  0X5900       Site         0           8 0.000000e+00  0.000000000    0
+#> 2168  0X5993       Site         0           7 0.000000e+00  0.000000000    0
+#> 2169  0X6051       Site         0           4 0.000000e+00  0.000000000    0
+#> 2170  0X6269       Site         0           2 0.000000e+00  0.000000000    0
+#> 2171  0X6284       Site         0           1 0.000000e+00  0.000000000    0
+#> 2172  0X6289       Site         0           7 0.000000e+00  0.000000000    0
+#> 2173  0X6321       Site         0           3 0.000000e+00  0.000000000    0
+#> 2174  0X6394       Site         0           2 0.000000e+00  0.000000000    0
+#> 2175  0X6450       Site         0           1 0.000000e+00  0.000000000    0
+#> 2176  0X6457       Site         0           2 0.000000e+00  0.000000000    0
+#> 2177  0X6480       Site         0           3 0.000000e+00  0.000000000    0
+#> 2178  0X6488       Site         0           5 0.000000e+00  0.000000000    0
+#> 2179  0X6501       Site         0           5 0.000000e+00  0.000000000    0
+#> 2180  0X6505       Site         0           4 0.000000e+00  0.000000000    0
+#> 2181   0X652       Site         0           2 0.000000e+00  0.000000000    0
+#> 2182  0X6562       Site         0           3 0.000000e+00  0.000000000    0
+#> 2183  0X6567       Site         0           3 0.000000e+00  0.000000000    0
+#> 2184  0X6569       Site         0           3 0.000000e+00  0.000000000    0
+#> 2185  0X6580       Site         0           2 0.000000e+00  0.000000000    0
+#> 2186   0X664       Site         0           9 0.000000e+00  0.000000000    0
+#> 2187  0X6699       Site         0           4 0.000000e+00  0.000000000    0
+#> 2188  0X6711       Site         0           7 0.000000e+00  0.000000000    0
+#> 2189  0X6747       Site         0          13 0.000000e+00  0.000000000    0
+#> 2190  0X6846       Site         1           3 3.333333e-01  1.000000000    1
+#> 2191  0X6938       Site         0           3 0.000000e+00  0.000000000    0
+#> 2192  0X6995       Site         0           7 0.000000e+00  0.000000000    0
+#> 2193   0X700       Site         0           4 0.000000e+00  0.000000000    0
+#> 2194  0X7081       Site         1          14 7.142857e-02  1.000000000    1
+#> 2195  0X7203       Site         0           1 0.000000e+00  0.000000000    0
+#> 2196  0X7218       Site         0           2 0.000000e+00  0.000000000    0
+#> 2197  0X7225       Site         0          10 0.000000e+00  0.000000000    0
+#> 2198  0X7261       Site         0          11 0.000000e+00  0.000000000    0
+#> 2199  0X7377       Site         0           6 0.000000e+00  0.000000000    0
+#> 2200  0X7420       Site         0           4 0.000000e+00  0.000000000    0
+#> 2201  0X7561       Site         0           3 0.000000e+00  0.000000000    0
+#> 2202  0X7633       Site         0           9 0.000000e+00  0.000000000    0
+#> 2203  0X7680       Site         1          13 7.692308e-02  1.000000000    1
+#> 2204  0X7772       Site         0           7 0.000000e+00  0.000000000    0
+#> 2205   0X781       Site         0           2 0.000000e+00  0.000000000    0
+#> 2206  0X7858       Site         0           8 0.000000e+00  0.000000000    0
+#> 2207  0X7871       Site         0           2 0.000000e+00  0.000000000    0
+#> 2208  0X7893       Site         0           9 0.000000e+00  0.000000000    0
+#> 2209  0X7965       Site         0           1 0.000000e+00  0.000000000    0
+#> 2210   0X800       Site         0          12 0.000000e+00  0.000000000    0
+#> 2211  0X8015       Site         0           2 0.000000e+00  0.000000000    0
+#> 2212  0X8090       Site         0           9 0.000000e+00  0.000000000    0
+#> 2213  0X8487       Site         0           2 0.000000e+00  0.000000000    0
+#> 2214  0X8500       Site         0           3 0.000000e+00  0.000000000    0
+#> 2215  0X8519       Site         0           3 0.000000e+00  0.000000000    0
+#> 2216  0X8543       Site         0           3 0.000000e+00  0.000000000    0
+#> 2217  0X8553       Site         0           4 0.000000e+00  0.000000000    0
+#> 2218  0X8568       Site         0           5 0.000000e+00  0.000000000    0
+#> 2219  0X8630       Site         0           4 0.000000e+00  0.000000000    0
+#> 2220  0X8702       Site         0           3 0.000000e+00  0.000000000    0
+#> 2221  0X9048       Site         0           3 0.000000e+00  0.000000000    0
+#> 2222  0X9121       Site         0           3 0.000000e+00  0.000000000    0
+#> 2223  0X9166       Site         0           8 0.000000e+00  0.000000000    0
+#> 2224  0X9201       Site         0           6 0.000000e+00  0.000000000    0
+#> 2225  0X9208       Site         0           4 0.000000e+00  0.000000000    0
+#> 2226  0X9242       Site         0           2 0.000000e+00  0.000000000    0
+#> 2227  0X9252       Site         0          11 0.000000e+00  0.000000000    0
+#> 2228  0X9280       Site         0           4 0.000000e+00  0.000000000    0
+#> 2229  0X9377       Site         0          12 0.000000e+00  0.000000000    0
+#> 2230  0X9392       Site         0           9 0.000000e+00  0.000000000    0
+#> 2231  0X9427       Site         0           2 0.000000e+00  0.000000000    0
+#> 2232  0X9450       Site         0           3 0.000000e+00  0.000000000    0
+#> 2233  0X9490       Site         1          13 7.692308e-02  1.000000000    1
+#> 2234  0X9544       Site         0           5 0.000000e+00  0.000000000    0
+#> 2235  0X9570       Site         0           1 0.000000e+00  0.000000000    0
+#> 2236  0X9766       Site         0           4 0.000000e+00  0.000000000    0
+#> 2237   0X999       Site         0           8 0.000000e+00  0.000000000    0
+#> 2238   0X002       Site         0           1 0.000000e+00  0.000000000    0
+#> 2239   0X012       Site         0           1 0.000000e+00  0.000000000    0
+#> 2240   0X094       Site         0           4 0.000000e+00  0.000000000    0
+#> 2241  0X1010       Site         0           7 0.000000e+00  0.000000000    0
+#> 2242  0X1211       Site         0           1 0.000000e+00  0.000000000    0
+#> 2243  0X1259       Site         0           1 0.000000e+00  0.000000000    0
+#> 2244  0X1274       Site         0           5 0.000000e+00  0.000000000    0
+#> 2245  0X1275       Site         0           4 0.000000e+00  0.000000000    0
+#> 2246  0X1284       Site         0           9 0.000000e+00  0.000000000    0
+#> 2247  0X1347       Site         2           9 2.222222e-01  2.000000000    2
+#> 2248  0X1391       Site         1           3 3.333333e-01  1.000000000    1
+#> 2249  0X1437       Site         0          10 0.000000e+00  0.000000000    0
+#> 2250  0X1469       Site         0           2 0.000000e+00  0.000000000    0
+#> 2251   0X161       Site         0           4 0.000000e+00  0.000000000    0
+#> 2252  0X1637       Site         0           3 0.000000e+00  0.000000000    0
+#> 2253  0X1662       Site         0           5 0.000000e+00  0.000000000    0
+#> 2254  0X1675       Site         1           5 2.000000e-01  1.000000000    1
+#> 2255  0X1834       Site         0           2 0.000000e+00  0.000000000    0
+#> 2256  0X1967       Site         0           6 0.000000e+00  0.000000000    0
+#> 2257  0X2116       Site         1           7 1.428571e-01  1.000000000    1
+#> 2258  0X2193       Site         0           1 0.000000e+00  0.000000000    0
+#> 2259  0X2226       Site         0           3 0.000000e+00  0.000000000    0
+#> 2260  0X2516       Site         1           8 1.250000e-01  1.000000000    1
+#> 2261   0X259       Site         2           9 2.222222e-01  2.000000000    2
+#> 2262  0X2615       Site         0           3 0.000000e+00  0.000000000    0
+#> 2263  0X2628       Site         1          13 7.692308e-02  1.000000000    1
+#> 2264  0X2659       Site         0           2 0.000000e+00  0.000000000    0
+#> 2265  0X2675       Site         0           6 0.000000e+00  0.000000000    0
+#> 2266  0X2714       Site         0           3 0.000000e+00  0.000000000    0
+#> 2267  0X2725       Site         1           5 2.000000e-01  1.000000000    1
+#> 2268  0X2775       Site         1          13 7.692308e-02  1.000000000    1
+#> 2269  0X2801       Site         0          15 0.000000e+00  0.000000000    0
+#> 2270  0X2813       Site         0           6 0.000000e+00  0.000000000    0
+#> 2271  0X2831       Site         0           1 0.000000e+00  0.000000000    0
+#> 2272  0X2861       Site         0           4 0.000000e+00  0.000000000    0
+#> 2273  0X2908       Site         0           5 0.000000e+00  0.000000000    0
+#> 2274  0X3017       Site         3          12 2.500000e-01  3.000000000    2
+#> 2275  0X3072       Site         0           3 0.000000e+00  0.000000000    0
+#> 2276  0X3250       Site         0           2 0.000000e+00  0.000000000    0
+#> 2277  0X3346       Site         0           3 0.000000e+00  0.000000000    0
+#> 2278  0X3423       Site         0           3 0.000000e+00  0.000000000    0
+#> 2279  0X3598       Site         0           6 0.000000e+00  0.000000000    0
+#> 2280  0X3599       Site         2          13 1.538462e-01  2.000000000    2
+#> 2281  0X3686       Site         0           2 0.000000e+00  0.000000000    0
+#> 2282  0X3833       Site         0           1 0.000000e+00  0.000000000    0
+#> 2283  0X3869       Site         1           8 1.250000e-01  1.000000000    1
+#> 2284  0X3939       Site         0           1 0.000000e+00  0.000000000    0
+#> 2285  0X4009       Site         1           7 1.428571e-01  1.000000000    1
+#> 2286  0X4050       Site         0           1 0.000000e+00  0.000000000    0
+#> 2287   0X412       Site         2          14 1.428571e-01  2.000000000    2
+#> 2288  0X4273       Site         1           9 1.111111e-01  1.000000000    1
+#> 2289  0X4334       Site         1           8 1.250000e-01  1.000000000    1
+#> 2290  0X4349       Site         1           9 1.111111e-01  1.000000000    1
+#> 2291  0X4352       Site         0           1 0.000000e+00  0.000000000    0
+#> 2292  0X4487       Site         1           3 3.333333e-01  1.000000000    1
+#> 2293  0X4618       Site         2          15 1.333333e-01  2.000000000    2
+#> 2294  0X4697       Site         1           8 1.250000e-01  1.000000000    1
+#> 2295  0X4747       Site         0           4 0.000000e+00  0.000000000    0
+#> 2296  0X4766       Site         0           1 0.000000e+00  0.000000000    0
+#> 2297  0X4903       Site         0           8 0.000000e+00  0.000000000    0
+#> 2298  0X4908       Site         0           3 0.000000e+00  0.000000000    0
+#> 2299  0X4934       Site         1           9 1.111111e-01  1.000000000    1
+#> 2300  0X5070       Site         0           2 0.000000e+00  0.000000000    0
+#> 2301  0X5089       Site         0           1 0.000000e+00  0.000000000    0
+#> 2302  0X5132       Site         0           1 0.000000e+00  0.000000000    0
+#> 2303  0X5391       Site         0           2 0.000000e+00  0.000000000    0
+#> 2304  0X5551       Site         1           9 1.111111e-01  1.000000000    1
+#> 2305  0X5616       Site         0          10 0.000000e+00  0.000000000    0
+#> 2306  0X5873       Site         2          13 1.538462e-01  2.000000000    2
+#> 2307  0X5886       Site         1           9 1.111111e-01  1.000000000    1
+#> 2308  0X5900       Site         0           8 0.000000e+00  0.000000000    0
+#> 2309  0X5993       Site         0           7 0.000000e+00  0.000000000    0
+#> 2310  0X6051       Site         0           4 0.000000e+00  0.000000000    0
+#> 2311  0X6269       Site         1           2 5.000000e-01  1.000000000    1
+#> 2312  0X6284       Site         0           1 0.000000e+00  0.000000000    0
+#> 2313  0X6289       Site         1           7 1.428571e-01  1.000000000    1
+#> 2314  0X6321       Site         0           3 0.000000e+00  0.000000000    0
+#> 2315  0X6394       Site         0           2 0.000000e+00  0.000000000    0
+#> 2316  0X6450       Site         0           1 0.000000e+00  0.000000000    0
+#> 2317  0X6457       Site         0           2 0.000000e+00  0.000000000    0
+#> 2318  0X6480       Site         0           3 0.000000e+00  0.000000000    0
+#> 2319  0X6488       Site         0           5 0.000000e+00  0.000000000    0
+#> 2320  0X6501       Site         0           5 0.000000e+00  0.000000000    0
+#> 2321  0X6505       Site         0           4 0.000000e+00  0.000000000    0
+#> 2322   0X652       Site         0           2 0.000000e+00  0.000000000    0
+#> 2323  0X6562       Site         0           3 0.000000e+00  0.000000000    0
+#> 2324  0X6567       Site         0           3 0.000000e+00  0.000000000    0
+#> 2325  0X6569       Site         0           3 0.000000e+00  0.000000000    0
+#> 2326  0X6580       Site         0           2 0.000000e+00  0.000000000    0
+#> 2327   0X664       Site         0           9 0.000000e+00  0.000000000    0
+#> 2328  0X6699       Site         0           4 0.000000e+00  0.000000000    0
+#> 2329  0X6711       Site         1           7 1.428571e-01  1.000000000    1
+#> 2330  0X6747       Site         1          13 7.692308e-02  1.000000000    1
+#> 2331  0X6846       Site         1           3 3.333333e-01  1.000000000    1
+#> 2332  0X6938       Site         0           3 0.000000e+00  0.000000000    0
+#> 2333  0X6995       Site         1           7 1.428571e-01  1.000000000    1
+#> 2334   0X700       Site         0           4 0.000000e+00  0.000000000    0
+#> 2335  0X7081       Site         1          14 7.142857e-02  1.000000000    1
+#> 2336  0X7203       Site         0           1 0.000000e+00  0.000000000    0
+#> 2337  0X7218       Site         0           2 0.000000e+00  0.000000000    0
+#> 2338  0X7225       Site         2          10 2.000000e-01  2.000000000    2
+#> 2339  0X7261       Site         0          11 0.000000e+00  0.000000000    0
+#> 2340  0X7377       Site         2           6 3.333333e-01  2.000000000    2
+#> 2341  0X7420       Site         0           4 0.000000e+00  0.000000000    0
+#> 2342  0X7561       Site         0           3 0.000000e+00  0.000000000    0
+#> 2343  0X7633       Site         0           9 0.000000e+00  0.000000000    0
+#> 2344  0X7680       Site         1          13 7.692308e-02  1.000000000    1
+#> 2345  0X7772       Site         0           7 0.000000e+00  0.000000000    0
+#> 2346   0X781       Site         0           2 0.000000e+00  0.000000000    0
+#> 2347  0X7858       Site         0           8 0.000000e+00  0.000000000    0
+#> 2348  0X7871       Site         0           2 0.000000e+00  0.000000000    0
+#> 2349  0X7893       Site         2           9 2.222222e-01  2.000000000    2
+#> 2350  0X7965       Site         0           1 0.000000e+00  0.000000000    0
+#> 2351   0X800       Site         1          12 8.333333e-02  1.000000000    1
+#> 2352  0X8015       Site         0           2 0.000000e+00  0.000000000    0
+#> 2353  0X8090       Site         0           9 0.000000e+00  0.000000000    0
+#> 2354  0X8487       Site         0           2 0.000000e+00  0.000000000    0
+#> 2355  0X8500       Site         0           3 0.000000e+00  0.000000000    0
+#> 2356  0X8519       Site         0           3 0.000000e+00  0.000000000    0
+#> 2357  0X8543       Site         2           3 6.666667e-01  2.000000000    2
+#> 2358  0X8553       Site         0           4 0.000000e+00  0.000000000    0
+#> 2359  0X8568       Site         1           5 2.000000e-01  1.000000000    1
+#> 2360  0X8630       Site         0           4 0.000000e+00  0.000000000    0
+#> 2361  0X8702       Site         0           3 0.000000e+00  0.000000000    0
+#> 2362  0X9048       Site         0           3 0.000000e+00  0.000000000    0
+#> 2363  0X9121       Site         0           3 0.000000e+00  0.000000000    0
+#> 2364  0X9166       Site         2           8 2.500000e-01  2.000000000    2
+#> 2365  0X9201       Site         1           6 1.666667e-01  1.000000000    1
+#> 2366  0X9208       Site         0           4 0.000000e+00  0.000000000    0
+#> 2367  0X9242       Site         0           2 0.000000e+00  0.000000000    0
+#> 2368  0X9252       Site         1          11 9.090909e-02  1.000000000    1
+#> 2369  0X9280       Site         0           4 0.000000e+00  0.000000000    0
+#> 2370  0X9377       Site         1          12 8.333333e-02  1.000000000    1
+#> 2371  0X9392       Site         0           9 0.000000e+00  0.000000000    0
+#> 2372  0X9427       Site         0           2 0.000000e+00  0.000000000    0
+#> 2373  0X9450       Site         0           3 0.000000e+00  0.000000000    0
+#> 2374  0X9490       Site         0          13 0.000000e+00  0.000000000    0
+#> 2375  0X9544       Site         1           5 2.000000e-01  1.000000000    1
+#> 2376  0X9570       Site         1           1 1.000000e+00  1.000000000    1
+#> 2377  0X9766       Site         0           4 0.000000e+00  0.000000000    0
+#> 2378   0X999       Site         0           8 0.000000e+00  0.000000000    0
+#> 2379   0X002       Site         0           6 0.000000e+00  0.000000000    0
+#> 2380   0X012       Site         0           6 0.000000e+00  0.000000000    0
+#> 2381   0X094       Site         6          23 2.608696e-01  0.260869565    1
+#> 2382  0X1010       Site         1          36 2.777778e-02  0.027777778    0
+#> 2383  0X1211       Site         1           6 1.666667e-01  0.166666667    0
+#> 2384  0X1259       Site         0           4 0.000000e+00  0.000000000    0
+#> 2385  0X1274       Site         1          27 3.703704e-02  0.037037037    0
+#> 2386  0X1275       Site         1          23 4.347826e-02  0.043478261    0
+#> 2387  0X1284       Site         2          51 3.921569e-02  0.039215686    0
+#> 2388  0X1347       Site         2          47 4.255319e-02  0.042553191    0
+#> 2389  0X1391       Site         1          14 7.142857e-02  0.071428571    0
+#> 2390  0X1437       Site         3          56 5.357143e-02  0.053571429    0
+#> 2391  0X1469       Site         1          12 8.333333e-02  0.083333333    0
+#> 2392   0X161       Site        11          24 4.583333e-01  0.458333333    2
+#> 2393  0X1637       Site         1          16 6.250000e-02  0.062500000    0
+#> 2394  0X1662       Site        12          26 4.615385e-01  0.461538462    2
+#> 2395  0X1675       Site         1          30 3.333333e-02  0.033333333    0
+#> 2396  0X1834       Site         1          10 1.000000e-01  0.100000000    0
+#> 2397  0X1967       Site         2          32 6.250000e-02  0.062500000    0
+#> 2398  0X2116       Site         2          35 5.714286e-02  0.057142857    0
+#> 2399  0X2193       Site         0           5 0.000000e+00  0.000000000    0
+#> 2400  0X2226       Site         4          18 2.222222e-01  0.222222222    1
+#> 2401  0X2516       Site         3          45 6.666667e-02  0.066666667    0
+#> 2402   0X259       Site         4          52 7.692308e-02  0.076923077    0
+#> 2403  0X2615       Site         0          16 0.000000e+00  0.000000000    0
+#> 2404  0X2628       Site        40          74 5.405405e-01  0.540540541    2
+#> 2405  0X2659       Site         3          11 2.727273e-01  0.272727273    1
+#> 2406  0X2675       Site         1          32 3.125000e-02  0.031250000    0
+#> 2407  0X2714       Site         1          17 5.882353e-02  0.058823529    0
+#> 2408  0X2725       Site         1          28 3.571429e-02  0.035714286    0
+#> 2409  0X2775       Site        25          73 3.424658e-01  0.342465753    2
+#> 2410  0X2801       Site         6          87 6.896552e-02  0.068965517    0
+#> 2411  0X2813       Site         2          34 5.882353e-02  0.058823529    0
+#> 2412  0X2831       Site         0           5 0.000000e+00  0.000000000    0
+#> 2413  0X2861       Site         1          22 4.545455e-02  0.045454545    0
+#> 2414  0X2908       Site         2          28 7.142857e-02  0.071428571    0
+#> 2415  0X3017       Site         2          67 2.985075e-02  0.029850746    0
+#> 2416  0X3072       Site         1          17 5.882353e-02  0.058823529    0
+#> 2417  0X3250       Site         5          11 4.545455e-01  0.454545455    2
+#> 2418  0X3346       Site         7          16 4.375000e-01  0.437500000    2
+#> 2419  0X3423       Site         1          15 6.666667e-02  0.066666667    0
+#> 2420  0X3598       Site        12          34 3.529412e-01  0.352941176    2
+#> 2421  0X3599       Site         3          72 4.166667e-02  0.041666667    0
+#> 2422  0X3686       Site         1          12 8.333333e-02  0.083333333    0
+#> 2423  0X3833       Site         0           6 0.000000e+00  0.000000000    0
+#> 2424  0X3869       Site         4          45 8.888889e-02  0.088888889    0
+#> 2425  0X3939       Site         0           6 0.000000e+00  0.000000000    0
+#> 2426  0X4009       Site         1          41 2.439024e-02  0.024390244    0
+#> 2427  0X4050       Site         0           5 0.000000e+00  0.000000000    0
+#> 2428   0X412       Site        13          80 1.625000e-01  0.162500000    0
+#> 2429  0X4273       Site         3          47 6.382979e-02  0.063829787    0
+#> 2430  0X4334       Site         2          46 4.347826e-02  0.043478261    0
+#> 2431  0X4349       Site         4          50 8.000000e-02  0.080000000    0
+#> 2432  0X4352       Site         2           5 4.000000e-01  0.400000000    2
+#> 2433  0X4487       Site         4          18 2.222222e-01  0.222222222    1
+#> 2434  0X4618       Site         5          87 5.747126e-02  0.057471264    0
+#> 2435  0X4697       Site         2          43 4.651163e-02  0.046511628    0
+#> 2436  0X4747       Site         8          24 3.333333e-01  0.333333333    2
+#> 2437  0X4766       Site         0           6 0.000000e+00  0.000000000    0
+#> 2438  0X4903       Site         2          45 4.444444e-02  0.044444444    0
+#> 2439  0X4908       Site         1          17 5.882353e-02  0.058823529    0
+#> 2440  0X4934       Site         2          47 4.255319e-02  0.042553191    0
+#> 2441  0X5070       Site         2          12 1.666667e-01  0.166666667    0
+#> 2442  0X5089       Site         0           6 0.000000e+00  0.000000000    0
+#> 2443  0X5132       Site         1           4 2.500000e-01  0.250000000    1
+#> 2444  0X5391       Site         0          10 0.000000e+00  0.000000000    0
+#> 2445  0X5551       Site         3          53 5.660377e-02  0.056603774    0
+#> 2446  0X5616       Site         3          58 5.172414e-02  0.051724138    0
+#> 2447  0X5873       Site        18          72 2.500000e-01  0.250000000    1
+#> 2448  0X5886       Site         3          51 5.882353e-02  0.058823529    0
+#> 2449  0X5900       Site         1          45 2.222222e-02  0.022222222    0
+#> 2450  0X5993       Site         3          40 7.500000e-02  0.075000000    0
+#> 2451  0X6051       Site         1          21 4.761905e-02  0.047619048    0
+#> 2452  0X6269       Site         0          10 0.000000e+00  0.000000000    0
+#> 2453  0X6284       Site         0           6 0.000000e+00  0.000000000    0
+#> 2454  0X6289       Site         2          41 4.878049e-02  0.048780488    0
+#> 2455  0X6321       Site         7          16 4.375000e-01  0.437500000    2
+#> 2456  0X6394       Site         1          11 9.090909e-02  0.090909091    0
+#> 2457  0X6450       Site         1           6 1.666667e-01  0.166666667    0
+#> 2458  0X6457       Site         0          12 0.000000e+00  0.000000000    0
+#> 2459  0X6480       Site         2          18 1.111111e-01  0.111111111    0
+#> 2460  0X6488       Site        14          30 4.666667e-01  0.466666667    2
+#> 2461  0X6501       Site         2          27 7.407407e-02  0.074074074    0
+#> 2462  0X6505       Site         1          23 4.347826e-02  0.043478261    0
+#> 2463   0X652       Site         0          12 0.000000e+00  0.000000000    0
+#> 2464  0X6562       Site         6          18 3.333333e-01  0.333333333    2
+#> 2465  0X6567       Site         1          16 6.250000e-02  0.062500000    0
+#> 2466  0X6569       Site         2          18 1.111111e-01  0.111111111    0
+#> 2467  0X6580       Site         1          12 8.333333e-02  0.083333333    0
+#> 2468   0X664       Site         3          47 6.382979e-02  0.063829787    0
+#> 2469  0X6699       Site         4          21 1.904762e-01  0.190476190    0
+#> 2470  0X6711       Site        11          41 2.682927e-01  0.268292683    1
+#> 2471  0X6747       Site        24          71 3.380282e-01  0.338028169    2
+#> 2472  0X6846       Site         5          17 2.941176e-01  0.294117647    1
+#> 2473  0X6938       Site         2          18 1.111111e-01  0.111111111    0
+#> 2474  0X6995       Site         2          39 5.128205e-02  0.051282051    0
+#> 2475   0X700       Site         1          22 4.545455e-02  0.045454545    0
+#> 2476  0X7081       Site        18          77 2.337662e-01  0.233766234    1
+#> 2477  0X7203       Site         2           6 3.333333e-01  0.333333333    2
+#> 2478  0X7218       Site         0          11 0.000000e+00  0.000000000    0
+#> 2479  0X7225       Site         2          55 3.636364e-02  0.036363636    0
+#> 2480  0X7261       Site         5          64 7.812500e-02  0.078125000    0
+#> 2481  0X7377       Site         8          33 2.424242e-01  0.242424242    1
+#> 2482  0X7420       Site         2          23 8.695652e-02  0.086956522    0
+#> 2483  0X7561       Site         0          17 0.000000e+00  0.000000000    0
+#> 2484  0X7633       Site        13          52 2.500000e-01  0.250000000    1
+#> 2485  0X7680       Site         2          70 2.857143e-02  0.028571429    0
+#> 2486  0X7772       Site         0          41 0.000000e+00  0.000000000    0
+#> 2487   0X781       Site         0          11 0.000000e+00  0.000000000    0
+#> 2488  0X7858       Site         6          43 1.395349e-01  0.139534884    0
+#> 2489  0X7871       Site         1          11 9.090909e-02  0.090909091    0
+#> 2490  0X7893       Site        13          52 2.500000e-01  0.250000000    1
+#> 2491  0X7965       Site         0           6 0.000000e+00  0.000000000    0
+#> 2492   0X800       Site         5          69 7.246377e-02  0.072463768    0
+#> 2493  0X8015       Site         1          12 8.333333e-02  0.083333333    0
+#> 2494  0X8090       Site         3          51 5.882353e-02  0.058823529    0
+#> 2495  0X8487       Site         0          12 0.000000e+00  0.000000000    0
+#> 2496  0X8500       Site         1          14 7.142857e-02  0.071428571    0
+#> 2497  0X8519       Site         6          17 3.529412e-01  0.352941176    2
+#> 2498  0X8543       Site         1          17 5.882353e-02  0.058823529    0
+#> 2499  0X8553       Site         1          23 4.347826e-02  0.043478261    0
+#> 2500  0X8568       Site        10          28 3.571429e-01  0.357142857    2
+#> 2501  0X8630       Site         1          22 4.545455e-02  0.045454545    0
+#> 2502  0X8702       Site         0          16 0.000000e+00  0.000000000    0
+#> 2503  0X9048       Site         4          15 2.666667e-01  0.266666667    1
+#> 2504  0X9121       Site         1          16 6.250000e-02  0.062500000    0
+#> 2505  0X9166       Site         1          41 2.439024e-02  0.024390244    0
+#> 2506  0X9201       Site         1          31 3.225806e-02  0.032258065    0
+#> 2507  0X9208       Site         2          23 8.695652e-02  0.086956522    0
+#> 2508  0X9242       Site         0          11 0.000000e+00  0.000000000    0
+#> 2509  0X9252       Site        30          63 4.761905e-01  0.476190476    2
+#> 2510  0X9280       Site         1          22 4.545455e-02  0.045454545    0
+#> 2511  0X9377       Site         5          66 7.575758e-02  0.075757576    0
+#> 2512  0X9392       Site         3          53 5.660377e-02  0.056603774    0
+#> 2513  0X9427       Site         6          12 5.000000e-01  0.500000000    2
+#> 2514  0X9450       Site         1          18 5.555556e-02  0.055555556    0
+#> 2515  0X9490       Site         4          74 5.405405e-02  0.054054054    0
+#> 2516  0X9544       Site         1          25 4.000000e-02  0.040000000    0
+#> 2517  0X9570       Site         0           6 0.000000e+00  0.000000000    0
+#> 2518  0X9766       Site         7          23 3.043478e-01  0.304347826    2
+#> 2519   0X999       Site         2          42 4.761905e-02  0.047619048    0
+#> 2520   0X002       Site         0           6 0.000000e+00  0.000000000    0
+#> 2521   0X012       Site         0           6 0.000000e+00  0.000000000    0
+#> 2522   0X094       Site         1          23 4.347826e-02  0.043478261    0
+#> 2523  0X1010       Site        11          36 3.055556e-01  0.305555556    2
+#> 2524  0X1211       Site         1           6 1.666667e-01  0.166666667    0
+#> 2525  0X1259       Site         0           4 0.000000e+00  0.000000000    0
+#> 2526  0X1274       Site        13          27 4.814815e-01  0.481481481    2
+#> 2527  0X1275       Site         1          23 4.347826e-02  0.043478261    0
+#> 2528  0X1284       Site         3          51 5.882353e-02  0.058823529    0
+#> 2529  0X1347       Site         4          47 8.510638e-02  0.085106383    0
+#> 2530  0X1391       Site         1          14 7.142857e-02  0.071428571    0
+#> 2531  0X1437       Site         3          56 5.357143e-02  0.053571429    0
+#> 2532  0X1469       Site         0          12 0.000000e+00  0.000000000    0
+#> 2533   0X161       Site         6          24 2.500000e-01  0.250000000    1
+#> 2534  0X1637       Site         1          16 6.250000e-02  0.062500000    0
+#> 2535  0X1662       Site         1          26 3.846154e-02  0.038461538    0
+#> 2536  0X1675       Site         2          30 6.666667e-02  0.066666667    0
+#> 2537  0X1834       Site         1          10 1.000000e-01  0.100000000    0
+#> 2538  0X1967       Site         2          32 6.250000e-02  0.062500000    0
+#> 2539  0X2116       Site         2          35 5.714286e-02  0.057142857    0
+#> 2540  0X2193       Site         0           5 0.000000e+00  0.000000000    0
+#> 2541  0X2226       Site         8          18 4.444444e-01  0.444444444    2
+#> 2542  0X2516       Site         1          45 2.222222e-02  0.022222222    0
+#> 2543   0X259       Site        10          52 1.923077e-01  0.192307692    0
+#> 2544  0X2615       Site         1          16 6.250000e-02  0.062500000    0
+#> 2545  0X2628       Site         2          74 2.702703e-02  0.027027027    0
+#> 2546  0X2659       Site         1          11 9.090909e-02  0.090909091    0
+#> 2547  0X2675       Site        10          32 3.125000e-01  0.312500000    2
+#> 2548  0X2714       Site         1          17 5.882353e-02  0.058823529    0
+#> 2549  0X2725       Site         1          28 3.571429e-02  0.035714286    0
+#> 2550  0X2775       Site        29          73 3.972603e-01  0.397260274    2
+#> 2551  0X2801       Site         4          87 4.597701e-02  0.045977011    0
+#> 2552  0X2813       Site         8          34 2.352941e-01  0.235294118    1
+#> 2553  0X2831       Site         0           5 0.000000e+00  0.000000000    0
+#> 2554  0X2861       Site         1          22 4.545455e-02  0.045454545    0
+#> 2555  0X2908       Site         0          28 0.000000e+00  0.000000000    0
+#> 2556  0X3017       Site         3          67 4.477612e-02  0.044776119    0
+#> 2557  0X3072       Site         1          17 5.882353e-02  0.058823529    0
+#> 2558  0X3250       Site         1          11 9.090909e-02  0.090909091    0
+#> 2559  0X3346       Site         0          16 0.000000e+00  0.000000000    0
+#> 2560  0X3423       Site         1          15 6.666667e-02  0.066666667    0
+#> 2561  0X3598       Site         4          34 1.176471e-01  0.117647059    0
+#> 2562  0X3599       Site        22          72 3.055556e-01  0.305555556    2
+#> 2563  0X3686       Site         4          12 3.333333e-01  0.333333333    2
+#> 2564  0X3833       Site         0           6 0.000000e+00  0.000000000    0
+#> 2565  0X3869       Site         4          45 8.888889e-02  0.088888889    0
+#> 2566  0X3939       Site         0           6 0.000000e+00  0.000000000    0
+#> 2567  0X4009       Site         1          41 2.439024e-02  0.024390244    0
+#> 2568  0X4050       Site         1           5 2.000000e-01  0.200000000    1
+#> 2569   0X412       Site         5          80 6.250000e-02  0.062500000    0
+#> 2570  0X4273       Site         3          47 6.382979e-02  0.063829787    0
+#> 2571  0X4334       Site         2          46 4.347826e-02  0.043478261    0
+#> 2572  0X4349       Site         4          50 8.000000e-02  0.080000000    0
+#> 2573  0X4352       Site         2           5 4.000000e-01  0.400000000    2
+#> 2574  0X4487       Site         8          18 4.444444e-01  0.444444444    2
+#> 2575  0X4618       Site        19          87 2.183908e-01  0.218390805    1
+#> 2576  0X4697       Site         1          43 2.325581e-02  0.023255814    0
+#> 2577  0X4747       Site         8          24 3.333333e-01  0.333333333    2
+#> 2578  0X4766       Site         0           6 0.000000e+00  0.000000000    0
+#> 2579  0X4903       Site        11          45 2.444444e-01  0.244444444    1
+#> 2580  0X4908       Site         1          17 5.882353e-02  0.058823529    0
+#> 2581  0X4934       Site         3          47 6.382979e-02  0.063829787    0
+#> 2582  0X5070       Site         0          12 0.000000e+00  0.000000000    0
+#> 2583  0X5089       Site         0           6 0.000000e+00  0.000000000    0
+#> 2584  0X5132       Site         0           4 0.000000e+00  0.000000000    0
+#> 2585  0X5391       Site         0          10 0.000000e+00  0.000000000    0
+#> 2586  0X5551       Site         3          53 5.660377e-02  0.056603774    0
+#> 2587  0X5616       Site        15          58 2.586207e-01  0.258620690    1
+#> 2588  0X5873       Site         4          72 5.555556e-02  0.055555556    0
+#> 2589  0X5886       Site         3          51 5.882353e-02  0.058823529    0
+#> 2590  0X5900       Site        18          45 4.000000e-01  0.400000000    2
+#> 2591  0X5993       Site         7          40 1.750000e-01  0.175000000    0
+#> 2592  0X6051       Site         1          21 4.761905e-02  0.047619048    0
+#> 2593  0X6269       Site         4          10 4.000000e-01  0.400000000    2
+#> 2594  0X6284       Site         0           6 0.000000e+00  0.000000000    0
+#> 2595  0X6289       Site         1          41 2.439024e-02  0.024390244    0
+#> 2596  0X6321       Site         2          16 1.250000e-01  0.125000000    0
+#> 2597  0X6394       Site         1          11 9.090909e-02  0.090909091    0
+#> 2598  0X6450       Site         0           6 0.000000e+00  0.000000000    0
+#> 2599  0X6457       Site        10          12 8.333333e-01  0.833333333    2
+#> 2600  0X6480       Site         0          18 0.000000e+00  0.000000000    0
+#> 2601  0X6488       Site         2          30 6.666667e-02  0.066666667    0
+#> 2602  0X6501       Site         2          27 7.407407e-02  0.074074074    0
+#> 2603  0X6505       Site         1          23 4.347826e-02  0.043478261    0
+#> 2604   0X652       Site         0          12 0.000000e+00  0.000000000    0
+#> 2605  0X6562       Site         6          18 3.333333e-01  0.333333333    2
+#> 2606  0X6567       Site         4          16 2.500000e-01  0.250000000    1
+#> 2607  0X6569       Site         2          18 1.111111e-01  0.111111111    0
+#> 2608  0X6580       Site         1          12 8.333333e-02  0.083333333    0
+#> 2609   0X664       Site         1          47 2.127660e-02  0.021276596    0
+#> 2610  0X6699       Site         2          21 9.523810e-02  0.095238095    0
+#> 2611  0X6711       Site         6          41 1.463415e-01  0.146341463    0
+#> 2612  0X6747       Site         5          71 7.042254e-02  0.070422535    0
+#> 2613  0X6846       Site         0          17 0.000000e+00  0.000000000    0
+#> 2614  0X6938       Site         1          18 5.555556e-02  0.055555556    0
+#> 2615  0X6995       Site         2          39 5.128205e-02  0.051282051    0
+#> 2616   0X700       Site         1          22 4.545455e-02  0.045454545    0
+#> 2617  0X7081       Site        23          77 2.987013e-01  0.298701299    1
+#> 2618  0X7203       Site         0           6 0.000000e+00  0.000000000    0
+#> 2619  0X7218       Site         0          11 0.000000e+00  0.000000000    0
+#> 2620  0X7225       Site         2          55 3.636364e-02  0.036363636    0
+#> 2621  0X7261       Site         2          64 3.125000e-02  0.031250000    0
+#> 2622  0X7377       Site         2          33 6.060606e-02  0.060606061    0
+#> 2623  0X7420       Site         0          23 0.000000e+00  0.000000000    0
+#> 2624  0X7561       Site         2          17 1.176471e-01  0.117647059    0
+#> 2625  0X7633       Site         3          52 5.769231e-02  0.057692308    0
+#> 2626  0X7680       Site        16          70 2.285714e-01  0.228571429    1
+#> 2627  0X7772       Site        11          41 2.682927e-01  0.268292683    1
+#> 2628   0X781       Site         1          11 9.090909e-02  0.090909091    0
+#> 2629  0X7858       Site         6          43 1.395349e-01  0.139534884    0
+#> 2630  0X7871       Site         3          11 2.727273e-01  0.272727273    1
+#> 2631  0X7893       Site         3          52 5.769231e-02  0.057692308    0
+#> 2632  0X7965       Site         2           6 3.333333e-01  0.333333333    2
+#> 2633   0X800       Site         0          69 0.000000e+00  0.000000000    0
+#> 2634  0X8015       Site         5          12 4.166667e-01  0.416666667    2
+#> 2635  0X8090       Site        17          51 3.333333e-01  0.333333333    2
+#> 2636  0X8487       Site         3          12 2.500000e-01  0.250000000    1
+#> 2637  0X8500       Site         6          14 4.285714e-01  0.428571429    2
+#> 2638  0X8519       Site         1          17 5.882353e-02  0.058823529    0
+#> 2639  0X8543       Site         1          17 5.882353e-02  0.058823529    0
+#> 2640  0X8553       Site         3          23 1.304348e-01  0.130434783    0
+#> 2641  0X8568       Site        10          28 3.571429e-01  0.357142857    2
+#> 2642  0X8630       Site         1          22 4.545455e-02  0.045454545    0
+#> 2643  0X8702       Site         0          16 0.000000e+00  0.000000000    0
+#> 2644  0X9048       Site         4          15 2.666667e-01  0.266666667    1
+#> 2645  0X9121       Site         1          16 6.250000e-02  0.062500000    0
+#> 2646  0X9166       Site         1          41 2.439024e-02  0.024390244    0
+#> 2647  0X9201       Site         1          31 3.225806e-02  0.032258065    0
+#> 2648  0X9208       Site         1          23 4.347826e-02  0.043478261    0
+#> 2649  0X9242       Site         0          11 0.000000e+00  0.000000000    0
+#> 2650  0X9252       Site         3          63 4.761905e-02  0.047619048    0
+#> 2651  0X9280       Site         2          22 9.090909e-02  0.090909091    0
+#> 2652  0X9377       Site        17          66 2.575758e-01  0.257575758    1
+#> 2653  0X9392       Site         3          53 5.660377e-02  0.056603774    0
+#> 2654  0X9427       Site         1          12 8.333333e-02  0.083333333    0
+#> 2655  0X9450       Site         1          18 5.555556e-02  0.055555556    0
+#> 2656  0X9490       Site         5          74 6.756757e-02  0.067567568    0
+#> 2657  0X9544       Site         1          25 4.000000e-02  0.040000000    0
+#> 2658  0X9570       Site         0           6 0.000000e+00  0.000000000    0
+#> 2659  0X9766       Site         1          23 4.347826e-02  0.043478261    0
+#> 2660   0X999       Site        19          42 4.523810e-01  0.452380952    2
+#> 2661   0X002       Site         0           6 0.000000e+00  0.000000000    0
+#> 2662   0X012       Site         0           6 0.000000e+00  0.000000000    0
+#> 2663   0X094       Site         1          23 4.347826e-02  0.043478261    0
+#> 2664  0X1010       Site         2          36 5.555556e-02  0.055555556    0
+#> 2665  0X1211       Site         0           6 0.000000e+00  0.000000000    0
+#> 2666  0X1259       Site         0           4 0.000000e+00  0.000000000    0
+#> 2667  0X1274       Site        10          27 3.703704e-01  0.370370370    2
+#> 2668  0X1275       Site         1          23 4.347826e-02  0.043478261    0
+#> 2669  0X1284       Site         2          51 3.921569e-02  0.039215686    0
+#> 2670  0X1347       Site         4          47 8.510638e-02  0.085106383    0
+#> 2671  0X1391       Site         0          14 0.000000e+00  0.000000000    0
+#> 2672  0X1437       Site        15          56 2.678571e-01  0.267857143    1
+#> 2673  0X1469       Site         3          12 2.500000e-01  0.250000000    1
+#> 2674   0X161       Site         1          24 4.166667e-02  0.041666667    0
+#> 2675  0X1637       Site         6          16 3.750000e-01  0.375000000    2
+#> 2676  0X1662       Site         1          26 3.846154e-02  0.038461538    0
+#> 2677  0X1675       Site         1          30 3.333333e-02  0.033333333    0
+#> 2678  0X1834       Site         1          10 1.000000e-01  0.100000000    0
+#> 2679  0X1967       Site        14          32 4.375000e-01  0.437500000    2
+#> 2680  0X2116       Site         2          35 5.714286e-02  0.057142857    0
+#> 2681  0X2193       Site         0           5 0.000000e+00  0.000000000    0
+#> 2682  0X2226       Site         1          18 5.555556e-02  0.055555556    0
+#> 2683  0X2516       Site         1          45 2.222222e-02  0.022222222    0
+#> 2684   0X259       Site         1          52 1.923077e-02  0.019230769    0
+#> 2685  0X2615       Site         1          16 6.250000e-02  0.062500000    0
+#> 2686  0X2628       Site         3          74 4.054054e-02  0.040540541    0
+#> 2687  0X2659       Site         1          11 9.090909e-02  0.090909091    0
+#> 2688  0X2675       Site         2          32 6.250000e-02  0.062500000    0
+#> 2689  0X2714       Site         1          17 5.882353e-02  0.058823529    0
+#> 2690  0X2725       Site         1          28 3.571429e-02  0.035714286    0
+#> 2691  0X2775       Site         5          73 6.849315e-02  0.068493151    0
+#> 2692  0X2801       Site         3          87 3.448276e-02  0.034482759    0
+#> 2693  0X2813       Site         2          34 5.882353e-02  0.058823529    0
+#> 2694  0X2831       Site         4           5 8.000000e-01  0.800000000    2
+#> 2695  0X2861       Site         1          22 4.545455e-02  0.045454545    0
+#> 2696  0X2908       Site         2          28 7.142857e-02  0.071428571    0
+#> 2697  0X3017       Site         3          67 4.477612e-02  0.044776119    0
+#> 2698  0X3072       Site         1          17 5.882353e-02  0.058823529    0
+#> 2699  0X3250       Site         1          11 9.090909e-02  0.090909091    0
+#> 2700  0X3346       Site         1          16 6.250000e-02  0.062500000    0
+#> 2701  0X3423       Site         1          15 6.666667e-02  0.066666667    0
+#> 2702  0X3598       Site         2          34 5.882353e-02  0.058823529    0
+#> 2703  0X3599       Site        17          72 2.361111e-01  0.236111111    1
+#> 2704  0X3686       Site         1          12 8.333333e-02  0.083333333    0
+#> 2705  0X3833       Site         0           6 0.000000e+00  0.000000000    0
+#> 2706  0X3869       Site         8          45 1.777778e-01  0.177777778    0
+#> 2707  0X3939       Site         2           6 3.333333e-01  0.333333333    2
+#> 2708  0X4009       Site         2          41 4.878049e-02  0.048780488    0
+#> 2709  0X4050       Site         1           5 2.000000e-01  0.200000000    1
+#> 2710   0X412       Site         3          80 3.750000e-02  0.037500000    0
+#> 2711  0X4273       Site         3          47 6.382979e-02  0.063829787    0
+#> 2712  0X4334       Site         2          46 4.347826e-02  0.043478261    0
+#> 2713  0X4349       Site         1          50 2.000000e-02  0.020000000    0
+#> 2714  0X4352       Site         2           5 4.000000e-01  0.400000000    2
+#> 2715  0X4487       Site         8          18 4.444444e-01  0.444444444    2
+#> 2716  0X4618       Site         5          87 5.747126e-02  0.057471264    0
+#> 2717  0X4697       Site         1          43 2.325581e-02  0.023255814    0
+#> 2718  0X4747       Site         1          24 4.166667e-02  0.041666667    0
+#> 2719  0X4766       Site         3           6 5.000000e-01  0.500000000    2
+#> 2720  0X4903       Site        13          45 2.888889e-01  0.288888889    1
+#> 2721  0X4908       Site         6          17 3.529412e-01  0.352941176    2
+#> 2722  0X4934       Site         6          47 1.276596e-01  0.127659574    0
+#> 2723  0X5070       Site         0          12 0.000000e+00  0.000000000    0
+#> 2724  0X5089       Site         0           6 0.000000e+00  0.000000000    0
+#> 2725  0X5132       Site         0           4 0.000000e+00  0.000000000    0
+#> 2726  0X5391       Site         0          10 0.000000e+00  0.000000000    0
+#> 2727  0X5551       Site         3          53 5.660377e-02  0.056603774    0
+#> 2728  0X5616       Site         3          58 5.172414e-02  0.051724138    0
+#> 2729  0X5873       Site        22          72 3.055556e-01  0.305555556    2
+#> 2730  0X5886       Site         3          51 5.882353e-02  0.058823529    0
+#> 2731  0X5900       Site         3          45 6.666667e-02  0.066666667    0
+#> 2732  0X5993       Site         7          40 1.750000e-01  0.175000000    0
+#> 2733  0X6051       Site         6          21 2.857143e-01  0.285714286    1
+#> 2734  0X6269       Site         0          10 0.000000e+00  0.000000000    0
+#> 2735  0X6284       Site         0           6 0.000000e+00  0.000000000    0
+#> 2736  0X6289       Site         2          41 4.878049e-02  0.048780488    0
+#> 2737  0X6321       Site         0          16 0.000000e+00  0.000000000    0
+#> 2738  0X6394       Site         1          11 9.090909e-02  0.090909091    0
+#> 2739  0X6450       Site         1           6 1.666667e-01  0.166666667    0
+#> 2740  0X6457       Site         0          12 0.000000e+00  0.000000000    0
+#> 2741  0X6480       Site         0          18 0.000000e+00  0.000000000    0
+#> 2742  0X6488       Site         2          30 6.666667e-02  0.066666667    0
+#> 2743  0X6501       Site         2          27 7.407407e-02  0.074074074    0
+#> 2744  0X6505       Site         6          23 2.608696e-01  0.260869565    1
+#> 2745   0X652       Site         0          12 0.000000e+00  0.000000000    0
+#> 2746  0X6562       Site        12          18 6.666667e-01  0.666666667    2
+#> 2747  0X6567       Site         1          16 6.250000e-02  0.062500000    0
+#> 2748  0X6569       Site         0          18 0.000000e+00  0.000000000    0
+#> 2749  0X6580       Site         3          12 2.500000e-01  0.250000000    1
+#> 2750   0X664       Site         3          47 6.382979e-02  0.063829787    0
+#> 2751  0X6699       Site         1          21 4.761905e-02  0.047619048    0
+#> 2752  0X6711       Site         0          41 0.000000e+00  0.000000000    0
+#> 2753  0X6747       Site         5          71 7.042254e-02  0.070422535    0
+#> 2754  0X6846       Site         1          17 5.882353e-02  0.058823529    0
+#> 2755  0X6938       Site         6          18 3.333333e-01  0.333333333    2
+#> 2756  0X6995       Site         0          39 0.000000e+00  0.000000000    0
+#> 2757   0X700       Site         1          22 4.545455e-02  0.045454545    0
+#> 2758  0X7081       Site         3          77 3.896104e-02  0.038961039    0
+#> 2759  0X7203       Site         0           6 0.000000e+00  0.000000000    0
+#> 2760  0X7218       Site         7          11 6.363636e-01  0.636363636    2
+#> 2761  0X7225       Site         2          55 3.636364e-02  0.036363636    0
+#> 2762  0X7261       Site        15          64 2.343750e-01  0.234375000    1
+#> 2763  0X7377       Site         8          33 2.424242e-01  0.242424242    1
+#> 2764  0X7420       Site         0          23 0.000000e+00  0.000000000    0
+#> 2765  0X7561       Site        10          17 5.882353e-01  0.588235294    2
+#> 2766  0X7633       Site         3          52 5.769231e-02  0.057692308    0
+#> 2767  0X7680       Site         2          70 2.857143e-02  0.028571429    0
+#> 2768  0X7772       Site        13          41 3.170732e-01  0.317073171    2
+#> 2769   0X781       Site         0          11 0.000000e+00  0.000000000    0
+#> 2770  0X7858       Site         2          43 4.651163e-02  0.046511628    0
+#> 2771  0X7871       Site         1          11 9.090909e-02  0.090909091    0
+#> 2772  0X7893       Site         4          52 7.692308e-02  0.076923077    0
+#> 2773  0X7965       Site         3           6 5.000000e-01  0.500000000    2
+#> 2774   0X800       Site        33          69 4.782609e-01  0.478260870    2
+#> 2775  0X8015       Site         1          12 8.333333e-02  0.083333333    0
+#> 2776  0X8090       Site         8          51 1.568627e-01  0.156862745    0
+#> 2777  0X8487       Site         0          12 0.000000e+00  0.000000000    0
+#> 2778  0X8500       Site         1          14 7.142857e-02  0.071428571    0
+#> 2779  0X8519       Site         1          17 5.882353e-02  0.058823529    0
+#> 2780  0X8543       Site         1          17 5.882353e-02  0.058823529    0
+#> 2781  0X8553       Site         1          23 4.347826e-02  0.043478261    0
+#> 2782  0X8568       Site        14          28 5.000000e-01  0.500000000    2
+#> 2783  0X8630       Site        13          22 5.909091e-01  0.590909091    2
+#> 2784  0X8702       Site         0          16 0.000000e+00  0.000000000    0
+#> 2785  0X9048       Site         1          15 6.666667e-02  0.066666667    0
+#> 2786  0X9121       Site         1          16 6.250000e-02  0.062500000    0
+#> 2787  0X9166       Site         1          41 2.439024e-02  0.024390244    0
+#> 2788  0X9201       Site         1          31 3.225806e-02  0.032258065    0
+#> 2789  0X9208       Site         4          23 1.739130e-01  0.173913043    0
+#> 2790  0X9242       Site         1          11 9.090909e-02  0.090909091    0
+#> 2791  0X9252       Site         4          63 6.349206e-02  0.063492063    0
+#> 2792  0X9280       Site         0          22 0.000000e+00  0.000000000    0
+#> 2793  0X9377       Site        13          66 1.969697e-01  0.196969697    0
+#> 2794  0X9392       Site        18          53 3.396226e-01  0.339622642    2
+#> 2795  0X9427       Site         0          12 0.000000e+00  0.000000000    0
+#> 2796  0X9450       Site         1          18 5.555556e-02  0.055555556    0
+#> 2797  0X9490       Site        20          74 2.702703e-01  0.270270270    1
+#> 2798  0X9544       Site        11          25 4.400000e-01  0.440000000    2
+#> 2799  0X9570       Site         0           6 0.000000e+00  0.000000000    0
+#> 2800  0X9766       Site         7          23 3.043478e-01  0.304347826    2
+#> 2801   0X999       Site         2          42 4.761905e-02  0.047619048    0
+#> 2802   0X002       Site         0           6 0.000000e+00  0.000000000    0
+#> 2803   0X012       Site         0           6 0.000000e+00  0.000000000    0
+#> 2804   0X094       Site         1          23 4.347826e-02  0.043478261    0
+#> 2805  0X1010       Site         2          36 5.555556e-02  0.055555556    0
+#> 2806  0X1211       Site         1           6 1.666667e-01  0.166666667    0
+#> 2807  0X1259       Site         0           4 0.000000e+00  0.000000000    0
+#> 2808  0X1274       Site         1          27 3.703704e-02  0.037037037    0
+#> 2809  0X1275       Site         1          23 4.347826e-02  0.043478261    0
+#> 2810  0X1284       Site        15          51 2.941176e-01  0.294117647    1
+#> 2811  0X1347       Site         3          47 6.382979e-02  0.063829787    0
+#> 2812  0X1391       Site         0          14 0.000000e+00  0.000000000    0
+#> 2813  0X1437       Site         3          56 5.357143e-02  0.053571429    0
+#> 2814  0X1469       Site         3          12 2.500000e-01  0.250000000    1
+#> 2815   0X161       Site         1          24 4.166667e-02  0.041666667    0
+#> 2816  0X1637       Site         1          16 6.250000e-02  0.062500000    0
+#> 2817  0X1662       Site         6          26 2.307692e-01  0.230769231    1
+#> 2818  0X1675       Site         7          30 2.333333e-01  0.233333333    1
+#> 2819  0X1834       Site         0          10 0.000000e+00  0.000000000    0
+#> 2820  0X1967       Site         2          32 6.250000e-02  0.062500000    0
+#> 2821  0X2116       Site         2          35 5.714286e-02  0.057142857    0
+#> 2822  0X2193       Site         0           5 0.000000e+00  0.000000000    0
+#> 2823  0X2226       Site         1          18 5.555556e-02  0.055555556    0
+#> 2824  0X2516       Site         1          45 2.222222e-02  0.022222222    0
+#> 2825   0X259       Site        10          52 1.923077e-01  0.192307692    0
+#> 2826  0X2615       Site         6          16 3.750000e-01  0.375000000    2
+#> 2827  0X2628       Site        13          74 1.756757e-01  0.175675676    0
+#> 2828  0X2659       Site         1          11 9.090909e-02  0.090909091    0
+#> 2829  0X2675       Site         2          32 6.250000e-02  0.062500000    0
+#> 2830  0X2714       Site         1          17 5.882353e-02  0.058823529    0
+#> 2831  0X2725       Site         1          28 3.571429e-02  0.035714286    0
+#> 2832  0X2775       Site        17          73 2.328767e-01  0.232876712    1
+#> 2833  0X2801       Site         6          87 6.896552e-02  0.068965517    0
+#> 2834  0X2813       Site         2          34 5.882353e-02  0.058823529    0
+#> 2835  0X2831       Site         0           5 0.000000e+00  0.000000000    0
+#> 2836  0X2861       Site         1          22 4.545455e-02  0.045454545    0
+#> 2837  0X2908       Site         2          28 7.142857e-02  0.071428571    0
+#> 2838  0X3017       Site        41          67 6.119403e-01  0.611940299    2
+#> 2839  0X3072       Site         1          17 5.882353e-02  0.058823529    0
+#> 2840  0X3250       Site         1          11 9.090909e-02  0.090909091    0
+#> 2841  0X3346       Site         0          16 0.000000e+00  0.000000000    0
+#> 2842  0X3423       Site         1          15 6.666667e-02  0.066666667    0
+#> 2843  0X3598       Site         2          34 5.882353e-02  0.058823529    0
+#> 2844  0X3599       Site         3          72 4.166667e-02  0.041666667    0
+#> 2845  0X3686       Site         1          12 8.333333e-02  0.083333333    0
+#> 2846  0X3833       Site         1           6 1.666667e-01  0.166666667    0
+#> 2847  0X3869       Site         3          45 6.666667e-02  0.066666667    0
+#> 2848  0X3939       Site         0           6 0.000000e+00  0.000000000    0
+#> 2849  0X4009       Site         2          41 4.878049e-02  0.048780488    0
+#> 2850  0X4050       Site         1           5 2.000000e-01  0.200000000    1
+#> 2851   0X412       Site        20          80 2.500000e-01  0.250000000    1
+#> 2852  0X4273       Site         3          47 6.382979e-02  0.063829787    0
+#> 2853  0X4334       Site         3          46 6.521739e-02  0.065217391    0
+#> 2854  0X4349       Site         9          50 1.800000e-01  0.180000000    0
+#> 2855  0X4352       Site         4           5 8.000000e-01  0.800000000    2
+#> 2856  0X4487       Site         4          18 2.222222e-01  0.222222222    1
+#> 2857  0X4618       Site         5          87 5.747126e-02  0.057471264    0
+#> 2858  0X4697       Site        14          43 3.255814e-01  0.325581395    2
+#> 2859  0X4747       Site         2          24 8.333333e-02  0.083333333    0
+#> 2860  0X4766       Site         0           6 0.000000e+00  0.000000000    0
+#> 2861  0X4903       Site         3          45 6.666667e-02  0.066666667    0
+#> 2862  0X4908       Site         0          17 0.000000e+00  0.000000000    0
+#> 2863  0X4934       Site        13          47 2.765957e-01  0.276595745    1
+#> 2864  0X5070       Site         1          12 8.333333e-02  0.083333333    0
+#> 2865  0X5089       Site         0           6 0.000000e+00  0.000000000    0
+#> 2866  0X5132       Site         0           4 0.000000e+00  0.000000000    0
+#> 2867  0X5391       Site         0          10 0.000000e+00  0.000000000    0
+#> 2868  0X5551       Site        21          53 3.962264e-01  0.396226415    2
+#> 2869  0X5616       Site         3          58 5.172414e-02  0.051724138    0
+#> 2870  0X5873       Site         4          72 5.555556e-02  0.055555556    0
+#> 2871  0X5886       Site        14          51 2.745098e-01  0.274509804    1
+#> 2872  0X5900       Site         3          45 6.666667e-02  0.066666667    0
+#> 2873  0X5993       Site         1          40 2.500000e-02  0.025000000    0
+#> 2874  0X6051       Site         1          21 4.761905e-02  0.047619048    0
+#> 2875  0X6269       Site         4          10 4.000000e-01  0.400000000    2
+#> 2876  0X6284       Site         3           6 5.000000e-01  0.500000000    2
+#> 2877  0X6289       Site         1          41 2.439024e-02  0.024390244    0
+#> 2878  0X6321       Site         0          16 0.000000e+00  0.000000000    0
+#> 2879  0X6394       Site         2          11 1.818182e-01  0.181818182    0
+#> 2880  0X6450       Site         0           6 0.000000e+00  0.000000000    0
+#> 2881  0X6457       Site         6          12 5.000000e-01  0.500000000    2
+#> 2882  0X6480       Site         0          18 0.000000e+00  0.000000000    0
+#> 2883  0X6488       Site         2          30 6.666667e-02  0.066666667    0
+#> 2884  0X6501       Site         9          27 3.333333e-01  0.333333333    2
+#> 2885  0X6505       Site         1          23 4.347826e-02  0.043478261    0
+#> 2886   0X652       Site         0          12 0.000000e+00  0.000000000    0
+#> 2887  0X6562       Site         2          18 1.111111e-01  0.111111111    0
+#> 2888  0X6567       Site         4          16 2.500000e-01  0.250000000    1
+#> 2889  0X6569       Site         2          18 1.111111e-01  0.111111111    0
+#> 2890  0X6580       Site         1          12 8.333333e-02  0.083333333    0
+#> 2891   0X664       Site        18          47 3.829787e-01  0.382978723    2
+#> 2892  0X6699       Site         6          21 2.857143e-01  0.285714286    1
+#> 2893  0X6711       Site         1          41 2.439024e-02  0.024390244    0
+#> 2894  0X6747       Site         4          71 5.633803e-02  0.056338028    0
+#> 2895  0X6846       Site         1          17 5.882353e-02  0.058823529    0
+#> 2896  0X6938       Site         6          18 3.333333e-01  0.333333333    2
+#> 2897  0X6995       Site        10          39 2.564103e-01  0.256410256    1
+#> 2898   0X700       Site         1          22 4.545455e-02  0.045454545    0
+#> 2899  0X7081       Site         4          77 5.194805e-02  0.051948052    0
+#> 2900  0X7203       Site         2           6 3.333333e-01  0.333333333    2
+#> 2901  0X7218       Site         0          11 0.000000e+00  0.000000000    0
+#> 2902  0X7225       Site         2          55 3.636364e-02  0.036363636    0
+#> 2903  0X7261       Site         2          64 3.125000e-02  0.031250000    0
+#> 2904  0X7377       Site         2          33 6.060606e-02  0.060606061    0
+#> 2905  0X7420       Site         2          23 8.695652e-02  0.086956522    0
+#> 2906  0X7561       Site         2          17 1.176471e-01  0.117647059    0
+#> 2907  0X7633       Site         2          52 3.846154e-02  0.038461538    0
+#> 2908  0X7680       Site         4          70 5.714286e-02  0.057142857    0
+#> 2909  0X7772       Site         2          41 4.878049e-02  0.048780488    0
+#> 2910   0X781       Site         6          11 5.454545e-01  0.545454545    2
+#> 2911  0X7858       Site         6          43 1.395349e-01  0.139534884    0
+#> 2912  0X7871       Site         5          11 4.545455e-01  0.454545455    2
+#> 2913  0X7893       Site        17          52 3.269231e-01  0.326923077    2
+#> 2914  0X7965       Site         2           6 3.333333e-01  0.333333333    2
+#> 2915   0X800       Site        19          69 2.753623e-01  0.275362319    1
+#> 2916  0X8015       Site         1          12 8.333333e-02  0.083333333    0
+#> 2917  0X8090       Site         2          51 3.921569e-02  0.039215686    0
+#> 2918  0X8487       Site         1          12 8.333333e-02  0.083333333    0
+#> 2919  0X8500       Site         4          14 2.857143e-01  0.285714286    1
+#> 2920  0X8519       Site         6          17 3.529412e-01  0.352941176    2
+#> 2921  0X8543       Site         0          17 0.000000e+00  0.000000000    0
+#> 2922  0X8553       Site         1          23 4.347826e-02  0.043478261    0
+#> 2923  0X8568       Site         2          28 7.142857e-02  0.071428571    0
+#> 2924  0X8630       Site         0          22 0.000000e+00  0.000000000    0
+#> 2925  0X8702       Site         6          16 3.750000e-01  0.375000000    2
+#> 2926  0X9048       Site         1          15 6.666667e-02  0.066666667    0
+#> 2927  0X9121       Site         1          16 6.250000e-02  0.062500000    0
+#> 2928  0X9166       Site         2          41 4.878049e-02  0.048780488    0
+#> 2929  0X9201       Site         1          31 3.225806e-02  0.032258065    0
+#> 2930  0X9208       Site         1          23 4.347826e-02  0.043478261    0
+#> 2931  0X9242       Site         5          11 4.545455e-01  0.454545455    2
+#> 2932  0X9252       Site        30          63 4.761905e-01  0.476190476    2
+#> 2933  0X9280       Site         1          22 4.545455e-02  0.045454545    0
+#> 2934  0X9377       Site        14          66 2.121212e-01  0.212121212    1
+#> 2935  0X9392       Site        16          53 3.018868e-01  0.301886792    2
+#> 2936  0X9427       Site         0          12 0.000000e+00  0.000000000    0
+#> 2937  0X9450       Site         1          18 5.555556e-02  0.055555556    0
+#> 2938  0X9490       Site         1          74 1.351351e-02  0.013513514    0
+#> 2939  0X9544       Site         1          25 4.000000e-02  0.040000000    0
+#> 2940  0X9570       Site         0           6 0.000000e+00  0.000000000    0
+#> 2941  0X9766       Site         1          23 4.347826e-02  0.043478261    0
+#> 2942   0X999       Site         2          42 4.761905e-02  0.047619048    0
+#> 2943   0X002       Site         0           6 0.000000e+00  0.000000000    0
+#> 2944   0X012       Site         0           6 0.000000e+00  0.000000000    0
+#> 2945   0X094       Site         1          23 4.347826e-02  0.043478261    0
+#> 2946  0X1010       Site         2          36 5.555556e-02  0.055555556    0
+#> 2947  0X1211       Site         0           6 0.000000e+00  0.000000000    0
+#> 2948  0X1259       Site         0           4 0.000000e+00  0.000000000    0
+#> 2949  0X1274       Site         1          27 3.703704e-02  0.037037037    0
+#> 2950  0X1275       Site         1          23 4.347826e-02  0.043478261    0
+#> 2951  0X1284       Site        10          51 1.960784e-01  0.196078431    0
+#> 2952  0X1347       Site        22          47 4.680851e-01  0.468085106    2
+#> 2953  0X1391       Site         5          14 3.571429e-01  0.357142857    2
+#> 2954  0X1437       Site         3          56 5.357143e-02  0.053571429    0
+#> 2955  0X1469       Site         0          12 0.000000e+00  0.000000000    0
+#> 2956   0X161       Site         6          24 2.500000e-01  0.250000000    1
+#> 2957  0X1637       Site         1          16 6.250000e-02  0.062500000    0
+#> 2958  0X1662       Site         1          26 3.846154e-02  0.038461538    0
+#> 2959  0X1675       Site         2          30 6.666667e-02  0.066666667    0
+#> 2960  0X1834       Site         0          10 0.000000e+00  0.000000000    0
+#> 2961  0X1967       Site         2          32 6.250000e-02  0.062500000    0
+#> 2962  0X2116       Site         2          35 5.714286e-02  0.057142857    0
+#> 2963  0X2193       Site         0           5 0.000000e+00  0.000000000    0
+#> 2964  0X2226       Site         4          18 2.222222e-01  0.222222222    1
+#> 2965  0X2516       Site         3          45 6.666667e-02  0.066666667    0
+#> 2966   0X259       Site         4          52 7.692308e-02  0.076923077    0
+#> 2967  0X2615       Site         1          16 6.250000e-02  0.062500000    0
+#> 2968  0X2628       Site         2          74 2.702703e-02  0.027027027    0
+#> 2969  0X2659       Site         1          11 9.090909e-02  0.090909091    0
+#> 2970  0X2675       Site        17          32 5.312500e-01  0.531250000    2
+#> 2971  0X2714       Site         1          17 5.882353e-02  0.058823529    0
+#> 2972  0X2725       Site        13          28 4.642857e-01  0.464285714    2
+#> 2973  0X2775       Site        20          73 2.739726e-01  0.273972603    1
+#> 2974  0X2801       Site         3          87 3.448276e-02  0.034482759    0
+#> 2975  0X2813       Site         2          34 5.882353e-02  0.058823529    0
+#> 2976  0X2831       Site         0           5 0.000000e+00  0.000000000    0
+#> 2977  0X2861       Site         1          22 4.545455e-02  0.045454545    0
+#> 2978  0X2908       Site         2          28 7.142857e-02  0.071428571    0
+#> 2979  0X3017       Site         2          67 2.985075e-02  0.029850746    0
+#> 2980  0X3072       Site         1          17 5.882353e-02  0.058823529    0
+#> 2981  0X3250       Site         1          11 9.090909e-02  0.090909091    0
+#> 2982  0X3346       Site         1          16 6.250000e-02  0.062500000    0
+#> 2983  0X3423       Site         4          15 2.666667e-01  0.266666667    1
+#> 2984  0X3598       Site         2          34 5.882353e-02  0.058823529    0
+#> 2985  0X3599       Site        14          72 1.944444e-01  0.194444444    0
+#> 2986  0X3686       Site         1          12 8.333333e-02  0.083333333    0
+#> 2987  0X3833       Site         0           6 0.000000e+00  0.000000000    0
+#> 2988  0X3869       Site        11          45 2.444444e-01  0.244444444    1
+#> 2989  0X3939       Site         0           6 0.000000e+00  0.000000000    0
+#> 2990  0X4009       Site        15          41 3.658537e-01  0.365853659    2
+#> 2991  0X4050       Site         3           5 6.000000e-01  0.600000000    2
+#> 2992   0X412       Site         3          80 3.750000e-02  0.037500000    0
+#> 2993  0X4273       Site        14          47 2.978723e-01  0.297872340    1
+#> 2994  0X4334       Site         3          46 6.521739e-02  0.065217391    0
+#> 2995  0X4349       Site        24          50 4.800000e-01  0.480000000    2
+#> 2996  0X4352       Site         0           5 0.000000e+00  0.000000000    0
+#> 2997  0X4487       Site         1          18 5.555556e-02  0.055555556    0
+#> 2998  0X4618       Site        24          87 2.758621e-01  0.275862069    1
+#> 2999  0X4697       Site         1          43 2.325581e-02  0.023255814    0
+#> 3000  0X4747       Site         7          24 2.916667e-01  0.291666667    1
+#> 3001  0X4766       Site         0           6 0.000000e+00  0.000000000    0
+#> 3002  0X4903       Site         2          45 4.444444e-02  0.044444444    0
+#> 3003  0X4908       Site         6          17 3.529412e-01  0.352941176    2
+#> 3004  0X4934       Site         3          47 6.382979e-02  0.063829787    0
+#> 3005  0X5070       Site         1          12 8.333333e-02  0.083333333    0
+#> 3006  0X5089       Site         0           6 0.000000e+00  0.000000000    0
+#> 3007  0X5132       Site         1           4 2.500000e-01  0.250000000    1
+#> 3008  0X5391       Site         2          10 2.000000e-01  0.200000000    1
+#> 3009  0X5551       Site         4          53 7.547170e-02  0.075471698    0
+#> 3010  0X5616       Site        15          58 2.586207e-01  0.258620690    1
+#> 3011  0X5873       Site        18          72 2.500000e-01  0.250000000    1
+#> 3012  0X5886       Site         3          51 5.882353e-02  0.058823529    0
+#> 3013  0X5900       Site         1          45 2.222222e-02  0.022222222    0
+#> 3014  0X5993       Site         1          40 2.500000e-02  0.025000000    0
+#> 3015  0X6051       Site         1          21 4.761905e-02  0.047619048    0
+#> 3016  0X6269       Site         0          10 0.000000e+00  0.000000000    0
+#> 3017  0X6284       Site         0           6 0.000000e+00  0.000000000    0
+#> 3018  0X6289       Site         2          41 4.878049e-02  0.048780488    0
+#> 3019  0X6321       Site         6          16 3.750000e-01  0.375000000    2
+#> 3020  0X6394       Site         1          11 9.090909e-02  0.090909091    0
+#> 3021  0X6450       Site         1           6 1.666667e-01  0.166666667    0
+#> 3022  0X6457       Site         0          12 0.000000e+00  0.000000000    0
+#> 3023  0X6480       Site         6          18 3.333333e-01  0.333333333    2
+#> 3024  0X6488       Site         8          30 2.666667e-01  0.266666667    1
+#> 3025  0X6501       Site         2          27 7.407407e-02  0.074074074    0
+#> 3026  0X6505       Site         1          23 4.347826e-02  0.043478261    0
+#> 3027   0X652       Site         0          12 0.000000e+00  0.000000000    0
+#> 3028  0X6562       Site         5          18 2.777778e-01  0.277777778    1
+#> 3029  0X6567       Site         7          16 4.375000e-01  0.437500000    2
+#> 3030  0X6569       Site         2          18 1.111111e-01  0.111111111    0
+#> 3031  0X6580       Site         3          12 2.500000e-01  0.250000000    1
+#> 3032   0X664       Site         3          47 6.382979e-02  0.063829787    0
+#> 3033  0X6699       Site         1          21 4.761905e-02  0.047619048    0
+#> 3034  0X6711       Site         3          41 7.317073e-02  0.073170732    0
+#> 3035  0X6747       Site         5          71 7.042254e-02  0.070422535    0
+#> 3036  0X6846       Site         6          17 3.529412e-01  0.352941176    2
+#> 3037  0X6938       Site         1          18 5.555556e-02  0.055555556    0
+#> 3038  0X6995       Site         2          39 5.128205e-02  0.051282051    0
+#> 3039   0X700       Site         0          22 0.000000e+00  0.000000000    0
+#> 3040  0X7081       Site         4          77 5.194805e-02  0.051948052    0
+#> 3041  0X7203       Site         1           6 1.666667e-01  0.166666667    0
+#> 3042  0X7218       Site         0          11 0.000000e+00  0.000000000    0
+#> 3043  0X7225       Site        19          55 3.454545e-01  0.345454545    2
+#> 3044  0X7261       Site         3          64 4.687500e-02  0.046875000    0
+#> 3045  0X7377       Site         2          33 6.060606e-02  0.060606061    0
+#> 3046  0X7420       Site         0          23 0.000000e+00  0.000000000    0
+#> 3047  0X7561       Site         3          17 1.764706e-01  0.176470588    0
+#> 3048  0X7633       Site        13          52 2.500000e-01  0.250000000    1
+#> 3049  0X7680       Site         5          70 7.142857e-02  0.071428571    0
+#> 3050  0X7772       Site         0          41 0.000000e+00  0.000000000    0
+#> 3051   0X781       Site         1          11 9.090909e-02  0.090909091    0
+#> 3052  0X7858       Site         2          43 4.651163e-02  0.046511628    0
+#> 3053  0X7871       Site         5          11 4.545455e-01  0.454545455    2
+#> 3054  0X7893       Site         1          52 1.923077e-02  0.019230769    0
+#> 3055  0X7965       Site         2           6 3.333333e-01  0.333333333    2
+#> 3056   0X800       Site        21          69 3.043478e-01  0.304347826    2
+#> 3057  0X8015       Site         1          12 8.333333e-02  0.083333333    0
+#> 3058  0X8090       Site         3          51 5.882353e-02  0.058823529    0
+#> 3059  0X8487       Site         1          12 8.333333e-02  0.083333333    0
+#> 3060  0X8500       Site         1          14 7.142857e-02  0.071428571    0
+#> 3061  0X8519       Site         0          17 0.000000e+00  0.000000000    0
+#> 3062  0X8543       Site         7          17 4.117647e-01  0.411764706    2
+#> 3063  0X8553       Site         1          23 4.347826e-02  0.043478261    0
+#> 3064  0X8568       Site         1          28 3.571429e-02  0.035714286    0
+#> 3065  0X8630       Site         1          22 4.545455e-02  0.045454545    0
+#> 3066  0X8702       Site         4          16 2.500000e-01  0.250000000    1
+#> 3067  0X9048       Site         1          15 6.666667e-02  0.066666667    0
+#> 3068  0X9121       Site         1          16 6.250000e-02  0.062500000    0
+#> 3069  0X9166       Site         1          41 2.439024e-02  0.024390244    0
+#> 3070  0X9201       Site         1          31 3.225806e-02  0.032258065    0
+#> 3071  0X9208       Site         1          23 4.347826e-02  0.043478261    0
+#> 3072  0X9242       Site         5          11 4.545455e-01  0.454545455    2
+#> 3073  0X9252       Site         4          63 6.349206e-02  0.063492063    0
+#> 3074  0X9280       Site         1          22 4.545455e-02  0.045454545    0
+#> 3075  0X9377       Site         6          66 9.090909e-02  0.090909091    0
+#> 3076  0X9392       Site         5          53 9.433962e-02  0.094339623    0
+#> 3077  0X9427       Site         1          12 8.333333e-02  0.083333333    0
+#> 3078  0X9450       Site         1          18 5.555556e-02  0.055555556    0
+#> 3079  0X9490       Site        25          74 3.378378e-01  0.337837838    2
+#> 3080  0X9544       Site         1          25 4.000000e-02  0.040000000    0
+#> 3081  0X9570       Site         0           6 0.000000e+00  0.000000000    0
+#> 3082  0X9766       Site         2          23 8.695652e-02  0.086956522    0
+#> 3083   0X999       Site         2          42 4.761905e-02  0.047619048    0
+#> 3084   0X002       Site         6           6 1.000000e+00  1.000000000    2
+#> 3085   0X012       Site         1           6 1.666667e-01  0.166666667    0
+#> 3086   0X094       Site         6          23 2.608696e-01  0.260869565    1
+#> 3087  0X1010       Site         2          36 5.555556e-02  0.055555556    0
+#> 3088  0X1211       Site         0           6 0.000000e+00  0.000000000    0
+#> 3089  0X1259       Site         4           4 1.000000e+00  1.000000000    2
+#> 3090  0X1274       Site         1          27 3.703704e-02  0.037037037    0
+#> 3091  0X1275       Site        10          23 4.347826e-01  0.434782609    2
+#> 3092  0X1284       Site         3          51 5.882353e-02  0.058823529    0
+#> 3093  0X1347       Site         3          47 6.382979e-02  0.063829787    0
+#> 3094  0X1391       Site         1          14 7.142857e-02  0.071428571    0
+#> 3095  0X1437       Site        27          56 4.821429e-01  0.482142857    2
+#> 3096  0X1469       Site         8          12 6.666667e-01  0.666666667    2
+#> 3097   0X161       Site         1          24 4.166667e-02  0.041666667    0
+#> 3098  0X1637       Site         0          16 0.000000e+00  0.000000000    0
+#> 3099  0X1662       Site        12          26 4.615385e-01  0.461538462    2
+#> 3100  0X1675       Site         7          30 2.333333e-01  0.233333333    1
+#> 3101  0X1834       Site         1          10 1.000000e-01  0.100000000    0
+#> 3102  0X1967       Site         2          32 6.250000e-02  0.062500000    0
+#> 3103  0X2116       Site         5          35 1.428571e-01  0.142857143    0
+#> 3104  0X2193       Site         1           5 2.000000e-01  0.200000000    1
+#> 3105  0X2226       Site         1          18 5.555556e-02  0.055555556    0
+#> 3106  0X2516       Site         1          45 2.222222e-02  0.022222222    0
+#> 3107   0X259       Site         4          52 7.692308e-02  0.076923077    0
+#> 3108  0X2615       Site         1          16 6.250000e-02  0.062500000    0
+#> 3109  0X2628       Site         4          74 5.405405e-02  0.054054054    0
+#> 3110  0X2659       Site         1          11 9.090909e-02  0.090909091    0
+#> 3111  0X2675       Site         9          32 2.812500e-01  0.281250000    1
+#> 3112  0X2714       Site         1          17 5.882353e-02  0.058823529    0
+#> 3113  0X2725       Site         1          28 3.571429e-02  0.035714286    0
+#> 3114  0X2775       Site        16          73 2.191781e-01  0.219178082    1
+#> 3115  0X2801       Site         6          87 6.896552e-02  0.068965517    0
+#> 3116  0X2813       Site         2          34 5.882353e-02  0.058823529    0
+#> 3117  0X2831       Site         2           5 4.000000e-01  0.400000000    2
+#> 3118  0X2861       Site         6          22 2.727273e-01  0.272727273    1
+#> 3119  0X2908       Site         8          28 2.857143e-01  0.285714286    1
+#> 3120  0X3017       Site         4          67 5.970149e-02  0.059701493    0
+#> 3121  0X3072       Site         1          17 5.882353e-02  0.058823529    0
+#> 3122  0X3250       Site         1          11 9.090909e-02  0.090909091    0
+#> 3123  0X3346       Site         1          16 6.250000e-02  0.062500000    0
+#> 3124  0X3423       Site         4          15 2.666667e-01  0.266666667    1
+#> 3125  0X3598       Site         2          34 5.882353e-02  0.058823529    0
+#> 3126  0X3599       Site         3          72 4.166667e-02  0.041666667    0
+#> 3127  0X3686       Site         1          12 8.333333e-02  0.083333333    0
+#> 3128  0X3833       Site         1           6 1.666667e-01  0.166666667    0
+#> 3129  0X3869       Site        14          45 3.111111e-01  0.311111111    2
+#> 3130  0X3939       Site         0           6 0.000000e+00  0.000000000    0
+#> 3131  0X4009       Site         2          41 4.878049e-02  0.048780488    0
+#> 3132  0X4050       Site         1           5 2.000000e-01  0.200000000    1
+#> 3133   0X412       Site         5          80 6.250000e-02  0.062500000    0
+#> 3134  0X4273       Site         2          47 4.255319e-02  0.042553191    0
+#> 3135  0X4334       Site         3          46 6.521739e-02  0.065217391    0
+#> 3136  0X4349       Site         4          50 8.000000e-02  0.080000000    0
+#> 3137  0X4352       Site         0           5 0.000000e+00  0.000000000    0
+#> 3138  0X4487       Site         1          18 5.555556e-02  0.055555556    0
+#> 3139  0X4618       Site         5          87 5.747126e-02  0.057471264    0
+#> 3140  0X4697       Site         1          43 2.325581e-02  0.023255814    0
+#> 3141  0X4747       Site         2          24 8.333333e-02  0.083333333    0
+#> 3142  0X4766       Site         1           6 1.666667e-01  0.166666667    0
+#> 3143  0X4903       Site         2          45 4.444444e-02  0.044444444    0
+#> 3144  0X4908       Site         1          17 5.882353e-02  0.058823529    0
+#> 3145  0X4934       Site         3          47 6.382979e-02  0.063829787    0
+#> 3146  0X5070       Site         1          12 8.333333e-02  0.083333333    0
+#> 3147  0X5089       Site         2           6 3.333333e-01  0.333333333    2
+#> 3148  0X5132       Site         0           4 0.000000e+00  0.000000000    0
+#> 3149  0X5391       Site         2          10 2.000000e-01  0.200000000    1
+#> 3150  0X5551       Site        21          53 3.962264e-01  0.396226415    2
+#> 3151  0X5616       Site         3          58 5.172414e-02  0.051724138    0
+#> 3152  0X5873       Site         1          72 1.388889e-02  0.013888889    0
+#> 3153  0X5886       Site         3          51 5.882353e-02  0.058823529    0
+#> 3154  0X5900       Site         2          45 4.444444e-02  0.044444444    0
+#> 3155  0X5993       Site        20          40 5.000000e-01  0.500000000    2
+#> 3156  0X6051       Site         6          21 2.857143e-01  0.285714286    1
+#> 3157  0X6269       Site         2          10 2.000000e-01  0.200000000    1
+#> 3158  0X6284       Site         2           6 3.333333e-01  0.333333333    2
+#> 3159  0X6289       Site         2          41 4.878049e-02  0.048780488    0
+#> 3160  0X6321       Site         1          16 6.250000e-02  0.062500000    0
+#> 3161  0X6394       Site         1          11 9.090909e-02  0.090909091    0
+#> 3162  0X6450       Site         1           6 1.666667e-01  0.166666667    0
+#> 3163  0X6457       Site         0          12 0.000000e+00  0.000000000    0
+#> 3164  0X6480       Site         9          18 5.000000e-01  0.500000000    2
+#> 3165  0X6488       Site         2          30 6.666667e-02  0.066666667    0
+#> 3166  0X6501       Site         3          27 1.111111e-01  0.111111111    0
+#> 3167  0X6505       Site         1          23 4.347826e-02  0.043478261    0
+#> 3168   0X652       Site         1          12 8.333333e-02  0.083333333    0
+#> 3169  0X6562       Site         2          18 1.111111e-01  0.111111111    0
+#> 3170  0X6567       Site         4          16 2.500000e-01  0.250000000    1
+#> 3171  0X6569       Site         6          18 3.333333e-01  0.333333333    2
+#> 3172  0X6580       Site         1          12 8.333333e-02  0.083333333    0
+#> 3173   0X664       Site         3          47 6.382979e-02  0.063829787    0
+#> 3174  0X6699       Site         2          21 9.523810e-02  0.095238095    0
+#> 3175  0X6711       Site         2          41 4.878049e-02  0.048780488    0
+#> 3176  0X6747       Site         5          71 7.042254e-02  0.070422535    0
+#> 3177  0X6846       Site         0          17 0.000000e+00  0.000000000    0
+#> 3178  0X6938       Site         6          18 3.333333e-01  0.333333333    2
+#> 3179  0X6995       Site         2          39 5.128205e-02  0.051282051    0
+#> 3180   0X700       Site         1          22 4.545455e-02  0.045454545    0
+#> 3181  0X7081       Site         3          77 3.896104e-02  0.038961039    0
+#> 3182  0X7203       Site         2           6 3.333333e-01  0.333333333    2
+#> 3183  0X7218       Site         1          11 9.090909e-02  0.090909091    0
+#> 3184  0X7225       Site        14          55 2.545455e-01  0.254545455    1
+#> 3185  0X7261       Site         2          64 3.125000e-02  0.031250000    0
+#> 3186  0X7377       Site         2          33 6.060606e-02  0.060606061    0
+#> 3187  0X7420       Site         0          23 0.000000e+00  0.000000000    0
+#> 3188  0X7561       Site         1          17 5.882353e-02  0.058823529    0
+#> 3189  0X7633       Site         3          52 5.769231e-02  0.057692308    0
+#> 3190  0X7680       Site        16          70 2.285714e-01  0.228571429    1
+#> 3191  0X7772       Site         3          41 7.317073e-02  0.073170732    0
+#> 3192   0X781       Site         0          11 0.000000e+00  0.000000000    0
+#> 3193  0X7858       Site         2          43 4.651163e-02  0.046511628    0
+#> 3194  0X7871       Site         1          11 9.090909e-02  0.090909091    0
+#> 3195  0X7893       Site         3          52 5.769231e-02  0.057692308    0
+#> 3196  0X7965       Site         3           6 5.000000e-01  0.500000000    2
+#> 3197   0X800       Site         4          69 5.797101e-02  0.057971014    0
+#> 3198  0X8015       Site         1          12 8.333333e-02  0.083333333    0
+#> 3199  0X8090       Site        17          51 3.333333e-01  0.333333333    2
+#> 3200  0X8487       Site         1          12 8.333333e-02  0.083333333    0
+#> 3201  0X8500       Site         6          14 4.285714e-01  0.428571429    2
+#> 3202  0X8519       Site         1          17 5.882353e-02  0.058823529    0
+#> 3203  0X8543       Site         0          17 0.000000e+00  0.000000000    0
+#> 3204  0X8553       Site         6          23 2.608696e-01  0.260869565    1
+#> 3205  0X8568       Site         2          28 7.142857e-02  0.071428571    0
+#> 3206  0X8630       Site         1          22 4.545455e-02  0.045454545    0
+#> 3207  0X8702       Site         6          16 3.750000e-01  0.375000000    2
+#> 3208  0X9048       Site         1          15 6.666667e-02  0.066666667    0
+#> 3209  0X9121       Site         1          16 6.250000e-02  0.062500000    0
+#> 3210  0X9166       Site         2          41 4.878049e-02  0.048780488    0
+#> 3211  0X9201       Site         1          31 3.225806e-02  0.032258065    0
+#> 3212  0X9208       Site         1          23 4.347826e-02  0.043478261    0
+#> 3213  0X9242       Site         0          11 0.000000e+00  0.000000000    0
+#> 3214  0X9252       Site        24          63 3.809524e-01  0.380952381    2
+#> 3215  0X9280       Site         1          22 4.545455e-02  0.045454545    0
+#> 3216  0X9377       Site         5          66 7.575758e-02  0.075757576    0
+#> 3217  0X9392       Site         5          53 9.433962e-02  0.094339623    0
+#> 3218  0X9427       Site         2          12 1.666667e-01  0.166666667    0
+#> 3219  0X9450       Site         8          18 4.444444e-01  0.444444444    2
+#> 3220  0X9490       Site         5          74 6.756757e-02  0.067567568    0
+#> 3221  0X9544       Site         6          25 2.400000e-01  0.240000000    1
+#> 3222  0X9570       Site         0           6 0.000000e+00  0.000000000    0
+#> 3223  0X9766       Site         2          23 8.695652e-02  0.086956522    0
+#> 3224   0X999       Site         2          42 4.761905e-02  0.047619048    0
+#> 3225   0X002       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3226   0X012       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3227   0X094       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3228  0X1010       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3229  0X1211       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3230  0X1259       Site         1         216 4.629630e-01  0.462962963   NA
+#> 3231  0X1274       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3232  0X1275       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3233  0X1284       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3234  0X1347       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3235  0X1391       Site         4         216 1.851852e+00  1.851851852   NA
+#> 3236  0X1437       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3237  0X1469       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3238   0X161       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3239  0X1637       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3240  0X1662       Site        33         216 1.527778e+01 15.277777778   NA
+#> 3241  0X1675       Site        28         216 1.296296e+01 12.962962963   NA
+#> 3242  0X1834       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3243  0X1967       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3244  0X2116       Site        21         216 9.722222e+00  9.722222222   NA
+#> 3245  0X2193       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3246  0X2226       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3247  0X2516       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3248   0X259       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3249  0X2615       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3250  0X2628       Site        21         216 9.722222e+00  9.722222222   NA
+#> 3251  0X2659       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3252  0X2675       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3253  0X2714       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3254  0X2725       Site         4         216 1.851852e+00  1.851851852   NA
+#> 3255  0X2775       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3256  0X2801       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3257  0X2813       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3258  0X2831       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3259  0X2861       Site        32         216 1.481481e+01 14.814814815   NA
+#> 3260  0X2908       Site        12         216 5.555556e+00  5.555555556   NA
+#> 3261  0X3017       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3262  0X3072       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3263  0X3250       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3264  0X3346       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3265  0X3423       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3266  0X3598       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3267  0X3599       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3268  0X3686       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3269  0X3833       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3270  0X3869       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3271  0X3939       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3272  0X4009       Site        21         216 9.722222e+00  9.722222222   NA
+#> 3273  0X4050       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3274   0X412       Site        32         216 1.481481e+01 14.814814815   NA
+#> 3275  0X4273       Site         4         216 1.851852e+00  1.851851852   NA
+#> 3276  0X4334       Site        36         216 1.666667e+01 16.666666667   NA
+#> 3277  0X4349       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3278  0X4352       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3279  0X4487       Site         4         216 1.851852e+00  1.851851852   NA
+#> 3280  0X4522       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3281  0X4618       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3282  0X4697       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3283  0X4747       Site        32         216 1.481481e+01 14.814814815   NA
+#> 3284  0X4766       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3285  0X4903       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3286  0X4908       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3287  0X4934       Site        12         216 5.555556e+00  5.555555556   NA
+#> 3288  0X5070       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3289  0X5089       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3290  0X5132       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3291  0X5391       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3292  0X5551       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3293  0X5616       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3294  0X5873       Site        41         216 1.898148e+01 18.981481481   NA
+#> 3295  0X5886       Site         4         216 1.851852e+00  1.851851852   NA
+#> 3296  0X5900       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3297  0X5993       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3298  0X6051       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3299  0X6269       Site         4         216 1.851852e+00  1.851851852   NA
+#> 3300  0X6284       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3301  0X6289       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3302  0X6321       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3303  0X6394       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3304  0X6450       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3305  0X6457       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3306  0X6480       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3307  0X6488       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3308  0X6501       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3309  0X6505       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3310   0X652       Site         1         216 4.629630e-01  0.462962963   NA
+#> 3311  0X6562       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3312  0X6567       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3313  0X6569       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3314  0X6580       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3315   0X664       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3316  0X6699       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3317  0X6711       Site        12         216 5.555556e+00  5.555555556   NA
+#> 3318  0X6747       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3319  0X6846       Site        12         216 5.555556e+00  5.555555556   NA
+#> 3320  0X6938       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3321  0X6995       Site        28         216 1.296296e+01 12.962962963   NA
+#> 3322   0X700       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3323  0X7081       Site        28         216 1.296296e+01 12.962962963   NA
+#> 3324  0X7203       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3325  0X7218       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3326  0X7225       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3327  0X7261       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3328  0X7377       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3329  0X7420       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3330  0X7561       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3331  0X7633       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3332  0X7680       Site        28         216 1.296296e+01 12.962962963   NA
+#> 3333  0X7772       Site        32         216 1.481481e+01 14.814814815   NA
+#> 3334   0X781       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3335  0X7858       Site        17         216 7.870370e+00  7.870370370   NA
+#> 3336  0X7871       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3337  0X7893       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3338  0X7965       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3339   0X800       Site        52         216 2.407407e+01 24.074074074   NA
+#> 3340  0X8015       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3341  0X8090       Site        24         216 1.111111e+01 11.111111111   NA
+#> 3342  0X8487       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3343  0X8500       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3344  0X8519       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3345  0X8543       Site        48         216 2.222222e+01 22.222222222   NA
+#> 3346  0X8553       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3347  0X8568       Site        12         216 5.555556e+00  5.555555556   NA
+#> 3348  0X8630       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3349  0X8702       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3350  0X9048       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3351  0X9121       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3352  0X9166       Site        28         216 1.296296e+01 12.962962963   NA
+#> 3353  0X9201       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3354  0X9208       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3355  0X9242       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3356  0X9252       Site        36         216 1.666667e+01 16.666666667   NA
+#> 3357  0X9280       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3358  0X9377       Site        20         216 9.259259e+00  9.259259259   NA
+#> 3359  0X9392       Site        16         216 7.407407e+00  7.407407407   NA
+#> 3360  0X9427       Site         0         216 0.000000e+00  0.000000000   NA
+#> 3361  0X9450       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3362  0X9490       Site        40         216 1.851852e+01 18.518518519   NA
+#> 3363  0X9544       Site        12         216 5.555556e+00  5.555555556   NA
+#> 3364  0X9570       Site         4         216 1.851852e+00  1.851851852   NA
+#> 3365  0X9766       Site         8         216 3.703704e+00  3.703703704   NA
+#> 3366   0X999       Site        20         216 9.259259e+00  9.259259259   NA
+#>                MetricID SnapshotDate        StudyID
+#> 1      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 2      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 3      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 4      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 5      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 6      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 7      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 8      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 9      Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 10     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 11     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 12     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 13     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 14     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 15     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 16     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 17     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 18     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 19     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 20     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 21     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 22     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 23     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 24     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 25     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 26     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 27     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 28     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 29     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 30     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 31     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 32     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 33     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 34     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 35     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 36     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 37     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 38     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 39     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 40     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 41     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 42     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 43     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 44     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 45     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 46     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 47     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 48     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 49     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 50     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 51     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 52     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 53     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 54     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 55     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 56     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 57     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 58     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 59     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 60     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 61     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 62     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 63     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 64     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 65     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 66     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 67     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 68     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 69     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 70     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 71     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 72     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 73     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 74     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 75     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 76     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 77     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 78     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 79     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 80     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 81     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 82     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 83     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 84     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 85     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 86     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 87     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 88     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 89     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 90     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 91     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 92     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 93     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 94     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 95     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 96     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 97     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 98     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 99     Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 100    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 101    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 102    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 103    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 104    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 105    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 106    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 107    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 108    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 109    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 110    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 111    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 112    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 113    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 114    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 115    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 116    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 117    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 118    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 119    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 120    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 121    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 122    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 123    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 124    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 125    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 126    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 127    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 128    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 129    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 130    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 131    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 132    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 133    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 134    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 135    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 136    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 137    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 138    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 139    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 140    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 141    Analysis_kri0001   2025-04-01 AA-AA-000-0000
+#> 142    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 143    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 144    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 145    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 146    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 147    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 148    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 149    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 150    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 151    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 152    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 153    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 154    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 155    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 156    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 157    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 158    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 159    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 160    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 161    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 162    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 163    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 164    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 165    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 166    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 167    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 168    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 169    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 170    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 171    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 172    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 173    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 174    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 175    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 176    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 177    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 178    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 179    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 180    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 181    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 182    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 183    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 184    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 185    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 186    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 187    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 188    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 189    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 190    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 191    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 192    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 193    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 194    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 195    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 196    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 197    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 198    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 199    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 200    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 201    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 202    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 203    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 204    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 205    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 206    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 207    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 208    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 209    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 210    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 211    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 212    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 213    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 214    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 215    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 216    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 217    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 218    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 219    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 220    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 221    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 222    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 223    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 224    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 225    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 226    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 227    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 228    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 229    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 230    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 231    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 232    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 233    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 234    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 235    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 236    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 237    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 238    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 239    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 240    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 241    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 242    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 243    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 244    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 245    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 246    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 247    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 248    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 249    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 250    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 251    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 252    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 253    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 254    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 255    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 256    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 257    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 258    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 259    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 260    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 261    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 262    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 263    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 264    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 265    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 266    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 267    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 268    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 269    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 270    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 271    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 272    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 273    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 274    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 275    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 276    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 277    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 278    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 279    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 280    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 281    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 282    Analysis_kri0002   2025-04-01 AA-AA-000-0000
+#> 283    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 284    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 285    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 286    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 287    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 288    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 289    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 290    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 291    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 292    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 293    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 294    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 295    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 296    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 297    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 298    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 299    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 300    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 301    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 302    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 303    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 304    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 305    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 306    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 307    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 308    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 309    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 310    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 311    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 312    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 313    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 314    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 315    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 316    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 317    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 318    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 319    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 320    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 321    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 322    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 323    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 324    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 325    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 326    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 327    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 328    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 329    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 330    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 331    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 332    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 333    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 334    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 335    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 336    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 337    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 338    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 339    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 340    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 341    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 342    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 343    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 344    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 345    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 346    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 347    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 348    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 349    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 350    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 351    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 352    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 353    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 354    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 355    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 356    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 357    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 358    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 359    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 360    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 361    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 362    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 363    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 364    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 365    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 366    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 367    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 368    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 369    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 370    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 371    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 372    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 373    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 374    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 375    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 376    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 377    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 378    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 379    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 380    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 381    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 382    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 383    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 384    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 385    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 386    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 387    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 388    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 389    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 390    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 391    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 392    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 393    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 394    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 395    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 396    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 397    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 398    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 399    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 400    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 401    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 402    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 403    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 404    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 405    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 406    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 407    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 408    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 409    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 410    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 411    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 412    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 413    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 414    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 415    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 416    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 417    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 418    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 419    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 420    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 421    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 422    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 423    Analysis_kri0003   2025-04-01 AA-AA-000-0000
+#> 424    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 425    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 426    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 427    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 428    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 429    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 430    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 431    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 432    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 433    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 434    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 435    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 436    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 437    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 438    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 439    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 440    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 441    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 442    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 443    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 444    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 445    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 446    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 447    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 448    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 449    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 450    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 451    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 452    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 453    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 454    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 455    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 456    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 457    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 458    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 459    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 460    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 461    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 462    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 463    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 464    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 465    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 466    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 467    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 468    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 469    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 470    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 471    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 472    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 473    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 474    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 475    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 476    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 477    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 478    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 479    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 480    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 481    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 482    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 483    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 484    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 485    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 486    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 487    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 488    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 489    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 490    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 491    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 492    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 493    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 494    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 495    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 496    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 497    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 498    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 499    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 500    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 501    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 502    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 503    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 504    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 505    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 506    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 507    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 508    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 509    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 510    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 511    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 512    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 513    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 514    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 515    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 516    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 517    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 518    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 519    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 520    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 521    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 522    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 523    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 524    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 525    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 526    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 527    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 528    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 529    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 530    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 531    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 532    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 533    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 534    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 535    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 536    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 537    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 538    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 539    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 540    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 541    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 542    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 543    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 544    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 545    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 546    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 547    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 548    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 549    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 550    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 551    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 552    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 553    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 554    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 555    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 556    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 557    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 558    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 559    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 560    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 561    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 562    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 563    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 564    Analysis_kri0004   2025-04-01 AA-AA-000-0000
+#> 565    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 566    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 567    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 568    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 569    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 570    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 571    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 572    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 573    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 574    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 575    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 576    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 577    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 578    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 579    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 580    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 581    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 582    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 583    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 584    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 585    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 586    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 587    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 588    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 589    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 590    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 591    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 592    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 593    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 594    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 595    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 596    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 597    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 598    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 599    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 600    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 601    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 602    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 603    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 604    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 605    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 606    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 607    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 608    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 609    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 610    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 611    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 612    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 613    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 614    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 615    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 616    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 617    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 618    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 619    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 620    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 621    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 622    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 623    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 624    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 625    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 626    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 627    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 628    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 629    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 630    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 631    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 632    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 633    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 634    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 635    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 636    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 637    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 638    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 639    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 640    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 641    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 642    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 643    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 644    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 645    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 646    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 647    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 648    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 649    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 650    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 651    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 652    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 653    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 654    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 655    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 656    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 657    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 658    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 659    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 660    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 661    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 662    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 663    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 664    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 665    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 666    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 667    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 668    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 669    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 670    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 671    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 672    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 673    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 674    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 675    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 676    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 677    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 678    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 679    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 680    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 681    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 682    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 683    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 684    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 685    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 686    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 687    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 688    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 689    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 690    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 691    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 692    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 693    Analysis_kri0005   2025-04-01 AA-AA-000-0000
+#> 694    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 695    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 696    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 697    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 698    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 699    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 700    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 701    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 702    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 703    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 704    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 705    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 706    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 707    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 708    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 709    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 710    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 711    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 712    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 713    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 714    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 715    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 716    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 717    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 718    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 719    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 720    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 721    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 722    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 723    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 724    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 725    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 726    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 727    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 728    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 729    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 730    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 731    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 732    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 733    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 734    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 735    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 736    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 737    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 738    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 739    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 740    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 741    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 742    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 743    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 744    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 745    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 746    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 747    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 748    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 749    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 750    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 751    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 752    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 753    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 754    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 755    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 756    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 757    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 758    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 759    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 760    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 761    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 762    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 763    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 764    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 765    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 766    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 767    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 768    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 769    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 770    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 771    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 772    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 773    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 774    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 775    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 776    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 777    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 778    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 779    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 780    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 781    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 782    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 783    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 784    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 785    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 786    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 787    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 788    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 789    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 790    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 791    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 792    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 793    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 794    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 795    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 796    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 797    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 798    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 799    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 800    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 801    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 802    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 803    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 804    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 805    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 806    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 807    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 808    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 809    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 810    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 811    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 812    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 813    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 814    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 815    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 816    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 817    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 818    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 819    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 820    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 821    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 822    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 823    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 824    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 825    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 826    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 827    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 828    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 829    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 830    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 831    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 832    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 833    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 834    Analysis_kri0006   2025-04-01 AA-AA-000-0000
+#> 835    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 836    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 837    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 838    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 839    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 840    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 841    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 842    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 843    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 844    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 845    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 846    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 847    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 848    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 849    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 850    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 851    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 852    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 853    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 854    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 855    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 856    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 857    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 858    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 859    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 860    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 861    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 862    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 863    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 864    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 865    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 866    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 867    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 868    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 869    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 870    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 871    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 872    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 873    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 874    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 875    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 876    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 877    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 878    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 879    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 880    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 881    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 882    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 883    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 884    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 885    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 886    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 887    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 888    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 889    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 890    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 891    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 892    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 893    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 894    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 895    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 896    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 897    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 898    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 899    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 900    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 901    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 902    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 903    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 904    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 905    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 906    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 907    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 908    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 909    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 910    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 911    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 912    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 913    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 914    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 915    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 916    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 917    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 918    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 919    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 920    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 921    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 922    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 923    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 924    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 925    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 926    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 927    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 928    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 929    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 930    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 931    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 932    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 933    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 934    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 935    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 936    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 937    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 938    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 939    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 940    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 941    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 942    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 943    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 944    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 945    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 946    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 947    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 948    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 949    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 950    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 951    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 952    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 953    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 954    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 955    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 956    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 957    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 958    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 959    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 960    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 961    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 962    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 963    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 964    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 965    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 966    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 967    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 968    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 969    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 970    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 971    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 972    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 973    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 974    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 975    Analysis_kri0007   2025-04-01 AA-AA-000-0000
+#> 976  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 977  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 978  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 979  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 980  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 981  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 982  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 983  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 984  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 985  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 986  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 987  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 988  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 989  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 990  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 991  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 992  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 993  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 994  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 995  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 996  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 997  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 998  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 999  Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1000 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1001 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1002 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1003 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1004 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1005 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1006 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1007 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1008 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1009 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1010 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1011 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1012 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1013 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1014 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1015 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1016 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1017 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1018 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1019 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1020 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1021 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1022 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1023 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1024 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1025 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1026 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1027 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1028 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1029 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1030 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1031 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1032 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1033 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1034 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1035 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1036 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1037 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1038 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1039 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1040 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1041 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1042 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1043 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1044 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1045 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1046 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1047 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1048 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1049 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1050 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1051 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1052 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1053 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1054 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1055 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1056 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1057 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1058 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1059 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1060 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1061 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1062 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1063 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1064 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1065 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1066 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1067 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1068 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1069 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1070 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1071 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1072 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1073 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1074 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1075 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1076 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1077 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1078 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1079 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1080 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1081 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1082 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1083 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1084 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1085 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1086 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1087 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1088 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1089 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1090 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1091 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1092 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1093 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1094 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1095 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1096 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1097 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1098 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1099 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1100 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1101 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1102 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1103 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1104 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1105 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1106 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1107 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1108 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1109 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1110 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1111 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1112 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1113 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1114 Analysis_kri0007-2   2025-04-01 AA-AA-000-0000
+#> 1115   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1116   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1117   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1118   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1119   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1120   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1121   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1122   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1123   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1124   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1125   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1126   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1127   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1128   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1129   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1130   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1131   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1132   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1133   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1134   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1135   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1136   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1137   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1138   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1139   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1140   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1141   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1142   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1143   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1144   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1145   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1146   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1147   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1148   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1149   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1150   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1151   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1152   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1153   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1154   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1155   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1156   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1157   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1158   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1159   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1160   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1161   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1162   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1163   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1164   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1165   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1166   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1167   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1168   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1169   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1170   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1171   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1172   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1173   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1174   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1175   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1176   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1177   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1178   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1179   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1180   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1181   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1182   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1183   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1184   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1185   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1186   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1187   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1188   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1189   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1190   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1191   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1192   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1193   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1194   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1195   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1196   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1197   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1198   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1199   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1200   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1201   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1202   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1203   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1204   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1205   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1206   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1207   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1208   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1209   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1210   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1211   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1212   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1213   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1214   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1215   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1216   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1217   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1218   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1219   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1220   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1221   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1222   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1223   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1224   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1225   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1226   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1227   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1228   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1229   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1230   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1231   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1232   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1233   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1234   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1235   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1236   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1237   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1238   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1239   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1240   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1241   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1242   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1243   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1244   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1245   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1246   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1247   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1248   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1249   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1250   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1251   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1252   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1253   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1254   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1255   Analysis_kri0008   2025-04-01 AA-AA-000-0000
+#> 1256   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1257   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1258   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1259   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1260   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1261   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1262   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1263   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1264   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1265   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1266   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1267   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1268   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1269   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1270   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1271   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1272   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1273   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1274   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1275   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1276   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1277   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1278   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1279   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1280   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1281   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1282   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1283   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1284   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1285   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1286   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1287   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1288   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1289   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1290   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1291   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1292   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1293   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1294   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1295   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1296   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1297   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1298   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1299   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1300   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1301   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1302   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1303   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1304   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1305   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1306   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1307   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1308   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1309   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1310   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1311   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1312   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1313   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1314   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1315   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1316   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1317   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1318   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1319   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1320   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1321   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1322   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1323   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1324   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1325   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1326   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1327   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1328   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1329   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1330   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1331   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1332   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1333   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1334   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1335   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1336   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1337   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1338   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1339   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1340   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1341   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1342   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1343   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1344   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1345   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1346   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1347   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1348   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1349   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1350   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1351   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1352   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1353   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1354   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1355   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1356   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1357   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1358   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1359   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1360   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1361   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1362   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1363   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1364   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1365   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1366   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1367   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1368   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1369   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1370   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1371   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1372   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1373   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1374   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1375   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1376   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1377   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1378   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1379   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1380   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1381   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1382   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1383   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1384   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1385   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1386   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1387   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1388   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1389   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1390   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1391   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1392   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1393   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1394   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1395   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1396   Analysis_kri0009   2025-04-01 AA-AA-000-0000
+#> 1397   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1398   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1399   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1400   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1401   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1402   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1403   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1404   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1405   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1406   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1407   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1408   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1409   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1410   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1411   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1412   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1413   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1414   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1415   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1416   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1417   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1418   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1419   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1420   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1421   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1422   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1423   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1424   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1425   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1426   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1427   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1428   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1429   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1430   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1431   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1432   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1433   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1434   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1435   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1436   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1437   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1438   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1439   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1440   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1441   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1442   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1443   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1444   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1445   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1446   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1447   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1448   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1449   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1450   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1451   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1452   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1453   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1454   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1455   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1456   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1457   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1458   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1459   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1460   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1461   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1462   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1463   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1464   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1465   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1466   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1467   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1468   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1469   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1470   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1471   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1472   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1473   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1474   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1475   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1476   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1477   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1478   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1479   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1480   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1481   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1482   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1483   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1484   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1485   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1486   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1487   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1488   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1489   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1490   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1491   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1492   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1493   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1494   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1495   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1496   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1497   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1498   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1499   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1500   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1501   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1502   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1503   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1504   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1505   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1506   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1507   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1508   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1509   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1510   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1511   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1512   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1513   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1514   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1515   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1516   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1517   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1518   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1519   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1520   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1521   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1522   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1523   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1524   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1525   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1526   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1527   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1528   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1529   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1530   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1531   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1532   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1533   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1534   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1535   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1536   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1537   Analysis_kri0010   2025-04-01 AA-AA-000-0000
+#> 1538   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1539   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1540   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1541   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1542   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1543   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1544   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1545   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1546   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1547   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1548   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1549   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1550   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1551   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1552   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1553   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1554   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1555   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1556   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1557   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1558   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1559   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1560   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1561   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1562   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1563   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1564   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1565   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1566   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1567   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1568   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1569   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1570   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1571   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1572   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1573   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1574   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1575   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1576   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1577   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1578   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1579   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1580   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1581   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1582   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1583   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1584   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1585   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1586   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1587   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1588   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1589   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1590   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1591   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1592   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1593   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1594   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1595   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1596   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1597   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1598   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1599   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1600   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1601   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1602   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1603   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1604   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1605   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1606   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1607   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1608   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1609   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1610   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1611   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1612   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1613   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1614   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1615   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1616   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1617   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1618   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1619   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1620   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1621   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1622   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1623   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1624   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1625   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1626   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1627   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1628   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1629   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1630   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1631   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1632   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1633   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1634   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1635   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1636   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1637   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1638   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1639   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1640   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1641   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1642   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1643   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1644   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1645   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1646   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1647   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1648   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1649   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1650   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1651   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1652   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1653   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1654   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1655   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1656   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1657   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1658   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1659   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1660   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1661   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1662   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1663   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1664   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1665   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1666   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1667   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1668   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1669   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1670   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1671   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1672   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1673   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1674   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1675   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1676   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1677   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1678   Analysis_kri0011   2025-04-01 AA-AA-000-0000
+#> 1679   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1680   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1681   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1682   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1683   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1684   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1685   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1686   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1687   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1688   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1689   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1690   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1691   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1692   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1693   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1694   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1695   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1696   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1697   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1698   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1699   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1700   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1701   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1702   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1703   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1704   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1705   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1706   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1707   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1708   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1709   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1710   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1711   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1712   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1713   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1714   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1715   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1716   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1717   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1718   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1719   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1720   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1721   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1722   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1723   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1724   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1725   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1726   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1727   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1728   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1729   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1730   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1731   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1732   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1733   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1734   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1735   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1736   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1737   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1738   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1739   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1740   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1741   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1742   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1743   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1744   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1745   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1746   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1747   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1748   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1749   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1750   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1751   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1752   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1753   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1754   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1755   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1756   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1757   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1758   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1759   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1760   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1761   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1762   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1763   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1764   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1765   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1766   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1767   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1768   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1769   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1770   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1771   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1772   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1773   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1774   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1775   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1776   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1777   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1778   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1779   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1780   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1781   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1782   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1783   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1784   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1785   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1786   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1787   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1788   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1789   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1790   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1791   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1792   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1793   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1794   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1795   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1796   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1797   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1798   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1799   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1800   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1801   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1802   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1803   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1804   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1805   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1806   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1807   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1808   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1809   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1810   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1811   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1812   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1813   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1814   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1815   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1816   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1817   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1818   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1819   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1820   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1821   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1822   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1823   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1824   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1825   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1826   Analysis_kri0012   2025-04-01 AA-AA-000-0000
+#> 1827   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1828   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1829   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1830   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1831   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1832   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1833   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1834   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1835   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1836   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1837   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1838   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1839   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1840   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1841   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1842   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1843   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1844   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1845   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1846   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1847   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1848   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1849   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1850   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1851   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1852   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1853   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1854   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1855   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1856   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1857   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1858   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1859   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1860   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1861   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1862   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1863   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1864   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1865   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1866   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1867   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1868   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1869   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1870   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1871   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1872   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1873   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1874   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1875   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1876   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1877   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1878   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1879   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1880   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1881   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1882   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1883   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1884   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1885   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1886   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1887   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1888   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1889   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1890   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1891   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1892   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1893   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1894   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1895   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1896   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1897   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1898   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1899   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1900   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1901   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1902   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1903   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1904   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1905   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1906   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1907   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1908   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1909   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1910   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1911   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1912   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1913   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1914   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1915   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1916   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1917   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1918   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1919   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1920   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1921   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1922   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1923   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1924   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1925   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1926   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1927   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1928   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1929   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1930   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1931   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1932   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1933   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1934   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1935   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1936   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1937   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1938   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1939   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1940   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1941   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1942   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1943   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1944   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1945   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1946   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1947   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1948   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1949   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1950   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1951   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1952   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1953   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1954   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1955   Analysis_kri0013   2025-04-01 AA-AA-000-0000
+#> 1956   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1957   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1958   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1959   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1960   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1961   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1962   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1963   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1964   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1965   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1966   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1967   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1968   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1969   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1970   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1971   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1972   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1973   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1974   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1975   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1976   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1977   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1978   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1979   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1980   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1981   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1982   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1983   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1984   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1985   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1986   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1987   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1988   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1989   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1990   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1991   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1992   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1993   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1994   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1995   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1996   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1997   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1998   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 1999   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2000   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2001   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2002   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2003   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2004   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2005   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2006   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2007   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2008   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2009   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2010   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2011   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2012   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2013   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2014   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2015   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2016   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2017   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2018   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2019   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2020   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2021   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2022   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2023   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2024   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2025   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2026   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2027   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2028   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2029   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2030   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2031   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2032   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2033   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2034   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2035   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2036   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2037   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2038   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2039   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2040   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2041   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2042   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2043   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2044   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2045   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2046   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2047   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2048   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2049   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2050   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2051   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2052   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2053   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2054   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2055   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2056   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2057   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2058   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2059   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2060   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2061   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2062   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2063   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2064   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2065   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2066   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2067   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2068   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2069   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2070   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2071   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2072   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2073   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2074   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2075   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2076   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2077   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2078   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2079   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2080   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2081   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2082   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2083   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2084   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2085   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2086   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2087   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2088   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2089   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2090   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2091   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2092   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2093   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2094   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2095   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2096   Analysis_kri0014   2025-04-01 AA-AA-000-0000
+#> 2097   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2098   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2099   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2100   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2101   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2102   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2103   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2104   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2105   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2106   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2107   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2108   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2109   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2110   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2111   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2112   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2113   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2114   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2115   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2116   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2117   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2118   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2119   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2120   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2121   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2122   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2123   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2124   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2125   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2126   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2127   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2128   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2129   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2130   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2131   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2132   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2133   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2134   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2135   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2136   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2137   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2138   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2139   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2140   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2141   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2142   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2143   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2144   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2145   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2146   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2147   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2148   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2149   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2150   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2151   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2152   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2153   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2154   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2155   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2156   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2157   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2158   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2159   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2160   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2161   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2162   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2163   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2164   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2165   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2166   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2167   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2168   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2169   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2170   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2171   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2172   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2173   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2174   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2175   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2176   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2177   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2178   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2179   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2180   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2181   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2182   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2183   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2184   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2185   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2186   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2187   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2188   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2189   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2190   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2191   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2192   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2193   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2194   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2195   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2196   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2197   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2198   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2199   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2200   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2201   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2202   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2203   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2204   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2205   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2206   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2207   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2208   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2209   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2210   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2211   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2212   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2213   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2214   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2215   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2216   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2217   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2218   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2219   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2220   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2221   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2222   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2223   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2224   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2225   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2226   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2227   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2228   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2229   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2230   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2231   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2232   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2233   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2234   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2235   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2236   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2237   Analysis_kri0015   2025-04-01 AA-AA-000-0000
+#> 2238   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2239   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2240   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2241   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2242   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2243   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2244   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2245   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2246   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2247   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2248   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2249   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2250   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2251   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2252   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2253   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2254   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2255   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2256   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2257   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2258   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2259   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2260   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2261   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2262   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2263   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2264   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2265   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2266   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2267   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2268   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2269   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2270   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2271   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2272   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2273   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2274   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2275   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2276   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2277   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2278   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2279   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2280   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2281   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2282   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2283   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2284   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2285   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2286   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2287   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2288   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2289   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2290   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2291   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2292   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2293   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2294   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2295   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2296   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2297   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2298   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2299   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2300   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2301   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2302   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2303   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2304   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2305   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2306   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2307   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2308   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2309   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2310   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2311   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2312   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2313   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2314   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2315   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2316   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2317   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2318   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2319   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2320   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2321   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2322   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2323   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2324   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2325   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2326   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2327   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2328   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2329   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2330   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2331   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2332   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2333   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2334   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2335   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2336   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2337   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2338   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2339   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2340   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2341   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2342   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2343   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2344   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2345   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2346   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2347   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2348   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2349   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2350   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2351   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2352   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2353   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2354   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2355   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2356   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2357   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2358   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2359   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2360   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2361   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2362   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2363   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2364   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2365   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2366   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2367   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2368   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2369   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2370   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2371   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2372   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2373   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2374   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2375   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2376   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2377   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2378   Analysis_kri0019   2025-04-01 AA-AA-000-0000
+#> 2379  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2380  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2381  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2382  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2383  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2384  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2385  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2386  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2387  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2388  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2389  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2390  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2391  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2392  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2393  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2394  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2395  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2396  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2397  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2398  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2399  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2400  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2401  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2402  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2403  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2404  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2405  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2406  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2407  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2408  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2409  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2410  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2411  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2412  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2413  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2414  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2415  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2416  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2417  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2418  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2419  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2420  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2421  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2422  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2423  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2424  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2425  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2426  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2427  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2428  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2429  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2430  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2431  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2432  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2433  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2434  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2435  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2436  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2437  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2438  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2439  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2440  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2441  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2442  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2443  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2444  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2445  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2446  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2447  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2448  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2449  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2450  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2451  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2452  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2453  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2454  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2455  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2456  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2457  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2458  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2459  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2460  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2461  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2462  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2463  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2464  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2465  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2466  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2467  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2468  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2469  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2470  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2471  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2472  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2473  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2474  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2475  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2476  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2477  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2478  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2479  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2480  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2481  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2482  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2483  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2484  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2485  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2486  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2487  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2488  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2489  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2490  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2491  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2492  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2493  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2494  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2495  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2496  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2497  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2498  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2499  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2500  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2501  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2502  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2503  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2504  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2505  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2506  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2507  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2508  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2509  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2510  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2511  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2512  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2513  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2514  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2515  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2516  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2517  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2518  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2519  Analysis_kri0020a   2025-04-01 AA-AA-000-0000
+#> 2520  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2521  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2522  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2523  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2524  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2525  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2526  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2527  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2528  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2529  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2530  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2531  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2532  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2533  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2534  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2535  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2536  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2537  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2538  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2539  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2540  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2541  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2542  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2543  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2544  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2545  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2546  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2547  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2548  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2549  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2550  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2551  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2552  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2553  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2554  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2555  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2556  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2557  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2558  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2559  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2560  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2561  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2562  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2563  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2564  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2565  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2566  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2567  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2568  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2569  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2570  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2571  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2572  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2573  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2574  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2575  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2576  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2577  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2578  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2579  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2580  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2581  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2582  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2583  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2584  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2585  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2586  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2587  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2588  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2589  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2590  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2591  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2592  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2593  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2594  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2595  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2596  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2597  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2598  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2599  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2600  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2601  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2602  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2603  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2604  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2605  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2606  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2607  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2608  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2609  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2610  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2611  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2612  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2613  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2614  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2615  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2616  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2617  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2618  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2619  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2620  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2621  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2622  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2623  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2624  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2625  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2626  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2627  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2628  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2629  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2630  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2631  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2632  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2633  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2634  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2635  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2636  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2637  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2638  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2639  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2640  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2641  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2642  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2643  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2644  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2645  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2646  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2647  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2648  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2649  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2650  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2651  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2652  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2653  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2654  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2655  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2656  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2657  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2658  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2659  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2660  Analysis_kri0020b   2025-04-01 AA-AA-000-0000
+#> 2661  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2662  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2663  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2664  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2665  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2666  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2667  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2668  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2669  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2670  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2671  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2672  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2673  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2674  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2675  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2676  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2677  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2678  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2679  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2680  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2681  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2682  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2683  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2684  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2685  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2686  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2687  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2688  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2689  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2690  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2691  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2692  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2693  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2694  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2695  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2696  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2697  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2698  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2699  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2700  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2701  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2702  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2703  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2704  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2705  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2706  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2707  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2708  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2709  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2710  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2711  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2712  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2713  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2714  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2715  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2716  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2717  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2718  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2719  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2720  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2721  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2722  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2723  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2724  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2725  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2726  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2727  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2728  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2729  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2730  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2731  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2732  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2733  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2734  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2735  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2736  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2737  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2738  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2739  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2740  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2741  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2742  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2743  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2744  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2745  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2746  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2747  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2748  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2749  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2750  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2751  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2752  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2753  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2754  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2755  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2756  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2757  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2758  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2759  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2760  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2761  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2762  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2763  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2764  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2765  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2766  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2767  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2768  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2769  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2770  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2771  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2772  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2773  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2774  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2775  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2776  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2777  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2778  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2779  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2780  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2781  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2782  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2783  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2784  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2785  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2786  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2787  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2788  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2789  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2790  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2791  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2792  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2793  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2794  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2795  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2796  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2797  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2798  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2799  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2800  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2801  Analysis_kri0020c   2025-04-01 AA-AA-000-0000
+#> 2802  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2803  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2804  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2805  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2806  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2807  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2808  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2809  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2810  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2811  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2812  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2813  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2814  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2815  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2816  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2817  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2818  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2819  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2820  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2821  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2822  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2823  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2824  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2825  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2826  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2827  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2828  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2829  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2830  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2831  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2832  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2833  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2834  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2835  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2836  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2837  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2838  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2839  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2840  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2841  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2842  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2843  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2844  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2845  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2846  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2847  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2848  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2849  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2850  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2851  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2852  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2853  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2854  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2855  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2856  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2857  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2858  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2859  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2860  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2861  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2862  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2863  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2864  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2865  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2866  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2867  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2868  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2869  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2870  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2871  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2872  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2873  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2874  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2875  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2876  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2877  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2878  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2879  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2880  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2881  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2882  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2883  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2884  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2885  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2886  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2887  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2888  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2889  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2890  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2891  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2892  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2893  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2894  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2895  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2896  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2897  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2898  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2899  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2900  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2901  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2902  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2903  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2904  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2905  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2906  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2907  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2908  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2909  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2910  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2911  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2912  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2913  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2914  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2915  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2916  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2917  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2918  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2919  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2920  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2921  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2922  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2923  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2924  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2925  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2926  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2927  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2928  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2929  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2930  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2931  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2932  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2933  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2934  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2935  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2936  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2937  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2938  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2939  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2940  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2941  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2942  Analysis_kri0020d   2025-04-01 AA-AA-000-0000
+#> 2943  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2944  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2945  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2946  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2947  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2948  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2949  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2950  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2951  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2952  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2953  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2954  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2955  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2956  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2957  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2958  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2959  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2960  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2961  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2962  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2963  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2964  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2965  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2966  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2967  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2968  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2969  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2970  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2971  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2972  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2973  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2974  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2975  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2976  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2977  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2978  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2979  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2980  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2981  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2982  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2983  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2984  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2985  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2986  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2987  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2988  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2989  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2990  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2991  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2992  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2993  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2994  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2995  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2996  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2997  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2998  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 2999  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3000  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3001  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3002  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3003  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3004  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3005  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3006  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3007  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3008  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3009  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3010  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3011  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3012  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3013  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3014  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3015  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3016  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3017  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3018  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3019  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3020  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3021  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3022  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3023  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3024  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3025  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3026  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3027  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3028  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3029  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3030  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3031  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3032  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3033  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3034  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3035  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3036  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3037  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3038  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3039  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3040  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3041  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3042  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3043  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3044  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3045  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3046  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3047  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3048  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3049  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3050  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3051  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3052  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3053  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3054  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3055  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3056  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3057  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3058  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3059  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3060  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3061  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3062  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3063  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3064  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3065  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3066  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3067  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3068  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3069  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3070  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3071  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3072  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3073  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3074  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3075  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3076  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3077  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3078  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3079  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3080  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3081  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3082  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3083  Analysis_kri0020e   2025-04-01 AA-AA-000-0000
+#> 3084  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3085  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3086  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3087  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3088  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3089  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3090  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3091  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3092  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3093  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3094  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3095  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3096  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3097  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3098  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3099  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3100  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3101  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3102  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3103  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3104  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3105  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3106  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3107  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3108  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3109  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3110  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3111  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3112  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3113  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3114  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3115  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3116  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3117  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3118  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3119  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3120  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3121  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3122  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3123  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3124  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3125  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3126  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3127  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3128  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3129  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3130  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3131  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3132  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3133  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3134  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3135  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3136  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3137  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3138  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3139  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3140  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3141  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3142  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3143  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3144  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3145  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3146  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3147  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3148  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3149  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3150  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3151  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3152  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3153  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3154  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3155  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3156  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3157  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3158  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3159  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3160  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3161  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3162  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3163  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3164  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3165  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3166  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3167  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3168  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3169  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3170  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3171  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3172  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3173  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3174  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3175  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3176  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3177  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3178  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3179  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3180  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3181  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3182  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3183  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3184  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3185  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3186  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3187  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3188  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3189  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3190  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3191  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3192  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3193  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3194  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3195  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3196  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3197  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3198  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3199  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3200  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3201  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3202  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3203  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3204  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3205  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3206  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3207  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3208  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3209  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3210  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3211  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3212  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3213  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3214  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3215  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3216  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3217  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3218  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3219  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3220  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3221  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3222  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3223  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3224  Analysis_kri0020f   2025-04-01 AA-AA-000-0000
+#> 3225   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3226   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3227   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3228   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3229   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3230   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3231   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3232   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3233   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3234   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3235   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3236   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3237   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3238   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3239   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3240   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3241   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3242   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3243   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3244   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3245   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3246   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3247   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3248   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3249   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3250   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3251   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3252   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3253   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3254   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3255   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3256   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3257   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3258   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3259   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3260   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3261   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3262   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3263   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3264   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3265   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3266   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3267   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3268   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3269   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3270   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3271   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3272   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3273   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3274   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3275   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3276   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3277   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3278   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3279   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3280   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3281   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3282   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3283   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3284   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3285   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3286   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3287   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3288   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3289   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3290   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3291   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3292   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3293   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3294   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3295   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3296   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3297   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3298   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3299   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3300   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3301   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3302   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3303   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3304   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3305   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3306   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3307   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3308   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3309   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3310   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3311   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3312   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3313   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3314   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3315   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3316   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3317   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3318   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3319   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3320   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3321   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3322   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3323   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3324   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3325   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3326   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3327   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3328   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3329   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3330   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3331   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3332   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3333   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3334   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3335   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3336   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3337   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3338   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3339   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3340   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3341   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3342   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3343   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3344   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3345   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3346   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3347   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3348   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3349   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3350   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3351   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3352   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3353   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3354   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3355   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3356   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3357   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3358   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3359   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3360   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3361   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3362   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3363   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3364   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3365   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+#> 3366   Analysis_srs0001   2025-04-01 AA-AA-000-0000
+```
+
+When results from earlier snapshots are available,
+[`CalculateChange()`](https://gilead-public.github.io/gsm.reporting/dev/reference/CalculateChange.md)
+adds the previous value, change, and percent change for `Numerator`,
+`Denominator`, `Metric`, `Score`, and `Flag`. It returns rows for all
+snapshots, so
+[`FilterByLatestSnapshotDate()`](https://gilead-public.github.io/gsm.reporting/dev/reference/FilterByLatestSnapshotDate.md)
+keeps only the current one.
+
+``` r
+
+dfHistorical <- gsm.core::reportingResults |>
+  filter(SnapshotDate < max(SnapshotDate))
+
+dfResultsChanges <- CalculateChange(
+  dfResults = dfResults,
+  dfResultsLongitudinal = dfHistorical
+) |>
+  FilterByLatestSnapshotDate()
+
+dfResultsChanges |>
+  select(GroupID, MetricID, Score, Score_Previous, Flag, Flag_Previous, Flag_Change)
+#> # A tibble: 3,366 × 7
+#>    GroupID MetricID         Score Score_Previous  Flag Flag_Previous Flag_Change
+#>    <chr>   <chr>            <dbl>          <dbl> <dbl>         <dbl>       <dbl>
+#>  1 0X002   Analysis_kri0001    NA             NA    NA            NA          NA
+#>  2 0X002   Analysis_kri0002    NA             NA    NA            NA          NA
+#>  3 0X002   Analysis_kri0003    NA             NA    NA            NA          NA
+#>  4 0X002   Analysis_kri0004    NA             NA    NA            NA          NA
+#>  5 0X002   Analysis_kri0006    NA             NA    NA            NA          NA
+#>  6 0X002   Analysis_kri0007    NA             NA    NA            NA          NA
+#>  7 0X002   Analysis_kri000…    NA             NA    NA            NA          NA
+#>  8 0X002   Analysis_kri0008    NA             NA    NA            NA          NA
+#>  9 0X002   Analysis_kri0009    NA             NA    NA            NA          NA
+#> 10 0X002   Analysis_kri0010    NA             NA    NA            NA          NA
+#> # ℹ 3,356 more rows
+```
+
+### Bounds
+
+[`MakeBounds()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeBounds.md)
+predicts, for each metric, the metric values at which flags change
+across the range of denominators. Charts use these to draw threshold
+lines. Metrics whose model has no predicted bounds, such as identity
+metrics, contribute no rows. A metric with no `Threshold` triggers a
+parsing warning and is skipped.
+
+``` r
+
+dfBounds <- MakeBounds(dfResults = dfResults, dfMetrics = dfMetrics)
+#> Warning: Warning: Failed to parse strThreshold ('NA') to a numeric
+#> vector.
+dfBounds
+#> # A tibble: 11,356 × 8
+#>    Threshold Denominator LogDenominator Numerator   Metric MetricID      StudyID
+#>        <dbl>       <dbl>          <dbl>     <dbl>    <dbl> <chr>         <chr>  
+#>  1        -2        156.           5.05    0.0889 0.000571 Analysis_kri… AA-AA-…
+#>  2        -2        159.           5.07    0.221  0.00139  Analysis_kri… AA-AA-…
+#>  3        -2        162            5.09    0.354  0.00218  Analysis_kri… AA-AA-…
+#>  4        -2        165.           5.11    0.488  0.00295  Analysis_kri… AA-AA-…
+#>  5        -2        168.           5.13    0.623  0.00370  Analysis_kri… AA-AA-…
+#>  6        -2        172.           5.15    0.760  0.00443  Analysis_kri… AA-AA-…
+#>  7        -2        175.           5.16    0.898  0.00514  Analysis_kri… AA-AA-…
+#>  8        -2        178.           5.18    1.04   0.00582  Analysis_kri… AA-AA-…
+#>  9        -2        181.           5.20    1.18   0.00649  Analysis_kri… AA-AA-…
+#> 10        -2        185.           5.22    1.32   0.00714  Analysis_kri… AA-AA-…
+#> # ℹ 11,346 more rows
+#> # ℹ 1 more variable: SnapshotDate <date>
+```
+
+## Running the reporting workflows
+
+The same steps run automatically through the YAML workflows in
+`inst/workflow/3_reporting`. Supply `Reporting_Results_Longitudinal` to
+include changes from earlier snapshots; without it,
+[`CalculateChange()`](https://gilead-public.github.io/gsm.reporting/dev/reference/CalculateChange.md)
+logs a message and returns `Reporting_Results` without change columns.
+
+``` r
+
+reporting_wf <- workr::MakeWorkflowList(
+  strPath = "workflow/3_reporting",
+  strPackage = "gsm.reporting"
+)
+reporting <- workr::RunWorkflows(
+  reporting_wf,
+  lData = c(
+    mapped,
+    list(
+      lAnalyzed = lAnalyzed,
+      lWorkflows = lWorkflows,
+      Reporting_Results_Longitudinal = dfHistorical,
+      dSnapshotDate = max(dfLatest$SnapshotDate)
+    )
+  )
+)
+#> Warning: Warning: Failed to parse strThreshold ('NA') to a numeric
+#> vector.
+```
+
+``` r
+
+purrr::map(reporting, dim)
+#> $Reporting_Groups
+#> [1] 1661    4
+#> 
+#> $Reporting_Metrics
+#> [1] 24 27
+#> 
+#> $Reporting_Results
+#> [1] 3366   26
+#> 
+#> $Reporting_Bounds
+#> [1] 11356     8
+```
+
+The output is the input for downstream reporting, such as the KRI charts
+and reports in `{gsm.kri}`.
