@@ -30,8 +30,7 @@ inputs are sample data from
 from [gsm.mapping](https://github.com/Gilead-Public/gsm.mapping).
 
 For the full pipeline, from metric calculation through charts and HTML
-reports, see the [gsm.kri](https://github.com/Gilead-Public/gsm.kri)
-documentation.
+reports, see the `{gsm.kri}` documentation.
 
 ## Inputs
 
@@ -45,8 +44,7 @@ The reporting workflows need three inputs:
   [gsm.mapping](https://github.com/Gilead-Public/gsm.mapping).
 
 In practice, `lWorkflows` and `lAnalyzed` come from metric workflows
-such as those in [gsm.kri](https://github.com/Gilead-Public/gsm.kri).
-Here they are reconstructed from
+such as those in `{gsm.kri}`. Here they are reconstructed from
 [gsm.core](https://gilead-public.github.io/gsm.core) sample data, so the
 vignette depends on no metric package.
 
@@ -7021,4 +7019,4 @@ purrr::map(reporting, dim)
 ```
 
 The output is the input for downstream reporting, such as the KRI charts
-and reports in [gsm.kri](https://github.com/Gilead-Public/gsm.kri).
+and reports in `{gsm.kri}`.
