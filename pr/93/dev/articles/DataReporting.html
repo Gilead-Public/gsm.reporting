@@ -7027,8 +7027,10 @@ one.</p>
 <p><code><a href="../reference/MakeBounds.html">MakeBounds()</a></code> predicts, for each metric, the metric
 values at which flags change across the range of denominators. Charts
 use these to draw threshold lines. Metrics whose model has no predicted
-bounds, such as identity metrics, contribute no rows. A metric with no
-<code>Threshold</code> triggers a parsing warning and is skipped.</p>
+bounds, such as identity metrics, contribute no rows. A missing or
+invalid <code>Threshold</code> triggers a parsing warning;
+normal-approximation bounds use default thresholds rather than being
+skipped.</p>
 <div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">dfBounds</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/MakeBounds.html">MakeBounds</a></span><span class="op">(</span>dfResults <span class="op">=</span> <span class="va">dfResults</span>, dfMetrics <span class="op">=</span> <span class="va">dfMetrics</span><span class="op">)</span></span>
 <span><span class="co">#&gt; Warning: Warning: Failed to parse strThreshold ('NA') to a numeric</span></span>

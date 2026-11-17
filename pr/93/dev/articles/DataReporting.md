@@ -6946,8 +6946,9 @@ dfResultsChanges |>
 predicts, for each metric, the metric values at which flags change
 across the range of denominators. Charts use these to draw threshold
 lines. Metrics whose model has no predicted bounds, such as identity
-metrics, contribute no rows. A metric with no `Threshold` triggers a
-parsing warning and is skipped.
+metrics, contribute no rows. A missing or invalid `Threshold` triggers a
+parsing warning; normal-approximation bounds use default thresholds
+rather than being skipped.
 
 ``` r
 
