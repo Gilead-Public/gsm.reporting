@@ -125,7 +125,7 @@ test_that("MakeBounds has appropriate expected warnings (#25)", {
     expect_warning("Failed to parse strThreshold")
 })
 
-test_that("MakeBounds skips metrics without thresholds (gsm.kri#326)", {
+test_that("MakeBounds skips metrics without thresholds (#95)", {
   dfResults <- dplyr::filter(
     gsm.core::reportingResults,
     SnapshotDate == "2025-04-01",
