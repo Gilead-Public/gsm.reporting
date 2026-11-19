@@ -5,7 +5,7 @@
 - [`MakeBounds()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeBounds.md)
   skips metrics without a parseable `Threshold`, such as unflagged
   comparative indicators, instead of failing for the whole study
-  (Gilead-Public/gsm.kri#326).
+  ([\#95](https://github.com/Gilead-Public/gsm.reporting/issues/95)).
 - `gsm.kri` is no longer a suggested dependency, which removes the
   circular dependency between `gsm.reporting` and `gsm.kri`.
 
