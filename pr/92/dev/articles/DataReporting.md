@@ -6978,8 +6978,8 @@ dfBounds
 A metric can break its numerator and denominator down by category, such
 as adverse events by seriousness or participants by IP status. To do so,
 its workflow adds an `Analysis_Distributions` step using
-`gsm.core::Input_Rate_Dist()` and includes `Analysis_Distributions` in
-its output:
+[`gsm.core::Input_Rate_Dist()`](https://gilead-public.github.io/gsm.core/reference/Input_Rate_Dist.html)
+and includes `Analysis_Distributions` in its output:
 
 ``` yaml
 - output: Analysis_Distributions

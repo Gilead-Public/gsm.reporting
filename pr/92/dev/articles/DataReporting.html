@@ -7062,7 +7062,7 @@ bounds, such as identity metrics, contribute no rows. A metric with no
 <p>A metric can break its numerator and denominator down by category,
 such as adverse events by seriousness or participants by IP status. To
 do so, its workflow adds an <code>Analysis_Distributions</code> step
-using <code>gsm.core::Input_Rate_Dist()</code> and includes
+using <code><a href="https://gilead-public.github.io/gsm.core/reference/Input_Rate_Dist.html" class="external-link">gsm.core::Input_Rate_Dist()</a></code> and includes
 <code>Analysis_Distributions</code> in its output:</p>
 <div class="sourceCode" id="cb9"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a><span class="kw">-</span><span class="at"> </span><span class="fu">output</span><span class="kw">:</span><span class="at"> Analysis_Distributions</span></span>
 <span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a><span class="at">  </span><span class="fu">name</span><span class="kw">:</span><span class="at"> gsm.core::Input_Rate_Dist</span></span>
