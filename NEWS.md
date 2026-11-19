@@ -1,5 +1,6 @@
 # gsm.reporting (development version)
 
+- `MakeBounds()` skips metrics without a parseable `Threshold`, such as unflagged comparative indicators, instead of failing for the whole study (Gilead-Public/gsm.kri#326).
 - `gsm.kri` is no longer a suggested dependency, which removes the circular dependency between `gsm.reporting` and `gsm.kri`.
 
 # gsm.reporting v1.1.8
