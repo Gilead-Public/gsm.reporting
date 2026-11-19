@@ -3,7 +3,8 @@
 #' @description
 #' `r lifecycle::badge("stable")`
 #'
-#' Calculate bounds across a set of metrics.
+#' Calculate bounds across a set of metrics. Metrics without a parseable
+#' `Threshold` have no bounds and are skipped.
 #'
 #' @param dfMetrics `data.frame` Metric-specific metadata for use in charts and
 #'   reporting. Created by passing an `lWorkflow` object to [MakeMetric()].
@@ -97,7 +98,16 @@ MakeBounds <- function(
         dplyr::filter(.data$MetricID == strMetric) %>%
         as.list()
 
+      # Metrics without thresholds, such as unflagged comparative indicators,
+      # have no bounds to draw.
+      if (is.null(lMetric$Threshold)) {
+        return(NULL)
+      }
+
       vThreshold <- ParseThreshold(strThreshold = lMetric$Threshold)
+      if (is.null(vThreshold)) {
+        return(NULL)
+      }
 
       if (
         !is.null(lMetric$AnalysisType) &&

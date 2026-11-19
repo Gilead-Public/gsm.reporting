@@ -124,3 +124,41 @@ test_that("MakeBounds has appropriate expected warnings (#25)", {
   ) |>
     expect_warning("Failed to parse strThreshold")
 })
+
+test_that("MakeBounds skips metrics without thresholds (#95)", {
+  dfResults <- dplyr::filter(
+    gsm.core::reportingResults,
+    SnapshotDate == "2025-04-01",
+    MetricID == "Analysis_kri0001"
+  )
+  dfUnflagged <- dplyr::mutate(
+    dfResults,
+    MetricID = "Analysis_ctq0001",
+    Score = NA_real_,
+    Flag = NA_real_
+  )
+  dfMetrics <- dplyr::filter(
+    gsm.core::reportingMetrics,
+    MetricID == "Analysis_kri0001"
+  )
+  dfMetricsUnflagged <- dplyr::bind_rows(
+    dfMetrics,
+    tibble::tibble(MetricID = "Analysis_ctq0001", GroupLevel = "Site")
+  )
+
+  dfExpected <- suppressMessages(MakeBounds(dfResults, dfMetrics))
+  dfBounds <- suppressWarnings(suppressMessages(MakeBounds(
+    dplyr::bind_rows(dfResults, dfUnflagged),
+    dfMetricsUnflagged
+  )))
+  expect_equal(dfBounds, dfExpected)
+
+  # Metadata from unflagged workflows alone has no Threshold column.
+  expect_equal(
+    NROW(suppressMessages(MakeBounds(
+      dfUnflagged,
+      dplyr::select(dfMetricsUnflagged[2, ], "MetricID", "GroupLevel")
+    ))),
+    0
+  )
+})
