@@ -42,7 +42,8 @@ A data frame.
 \description{
 \ifelse{html}{\href{https://lifecycle.r-lib.org/articles/stages.html#stable}{\figure{lifecycle-stable.svg}{options: alt='[Stable]'}}}{\strong{[Stable]}}
 
-Calculate bounds across a set of metrics.
+Calculate bounds across a set of metrics. Metrics without a parseable
+\code{Threshold} have no bounds and are skipped.
 }
 \examples{
 library(gsm.core)
