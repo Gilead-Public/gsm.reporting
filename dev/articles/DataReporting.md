@@ -12,7 +12,7 @@ The `{gsm}` suite of packages monitors clinical trials with Key Risk
 Indicators (KRIs).
 [gsm.reporting](https://gilead-public.github.io/gsm.reporting/) sits
 between analysis and reporting: it takes the output of metric workflows
-and produces the four tables of the reporting data model.
+and produces the tables of the reporting data model.
 
 ![](data_model_detailed.png)
 
@@ -22,6 +22,7 @@ and produces the four tables of the reporting data model.
 | `Reporting_Metrics` | [`MakeMetric()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeMetric.md) | One row of metadata per metric |
 | `Reporting_Results` | [`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md), [`CalculateChange()`](https://gilead-public.github.io/gsm.reporting/dev/reference/CalculateChange.md), [`FilterByLatestSnapshotDate()`](https://gilead-public.github.io/gsm.reporting/dev/reference/FilterByLatestSnapshotDate.md) | Stacked results for every metric and group |
 | `Reporting_Bounds` | [`MakeBounds()`](https://gilead-public.github.io/gsm.reporting/dev/reference/MakeBounds.md) | Predicted bounds used to draw flag thresholds in charts |
+| `Reporting_Distributions` | [`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md) | Stacked category breakdowns of each metric’s numerator and denominator, for metrics that define them |
 
 Each table has a YAML workflow in `inst/workflow/3_reporting`. This
 vignette builds each table step by step and then runs the workflows. The
@@ -6972,6 +6973,54 @@ dfBounds
 #> # ℹ 1 more variable: SnapshotDate <date>
 ```
 
+### Distributions
+
+A metric can break its numerator and denominator down by category, such
+as adverse events by seriousness or participants by IP status. To do so,
+its workflow adds an `Analysis_Distributions` step using
+[`gsm.core::Input_Rate_Dist()`](https://gilead-public.github.io/gsm.core/reference/Input_Rate_Dist.html)
+and includes `Analysis_Distributions` in its output:
+
+``` yaml
+- output: Analysis_Distributions
+  name: gsm.core::Input_Rate_Dist
+  params:
+    dfSubjects: Mapped_SUBJ
+    dfNumerator: Mapped_AE
+    dfDenominator: Mapped_SUBJ
+    strSubjectCol: subjid
+    strGroupCol: invid
+    strGroupLevel: GroupLevel
+    strNumeratorMethod: Count
+    strDenominatorMethod: Count
+    strNumeratorCatCols: aeser
+    strDenominatorCatCols: drv_ip_nonstarter_status
+```
+
+`Reporting_Distributions` stacks these with
+[`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md),
+as for `Reporting_Results`. Each row is one category of one variable for
+one group, with the columns `GroupID`, `GroupLevel`, `Source`
+(`Numerator` or `Denominator`), `Variable`, `Category`, `Count`,
+`Participants`, `Total`, and `Percent`, plus `MetricID`, `SnapshotDate`,
+and `StudyID`.
+
+Metrics without `Analysis_Distributions` are skipped. None of the sample
+metrics here define distributions, so the result is an empty data frame:
+
+``` r
+
+dfDistributions <- BindResults(
+  lAnalysis = lAnalyzed,
+  strName = "Analysis_Distributions",
+  dSnapshotDate = max(dfLatest$SnapshotDate),
+  strStudyID = unique(dfLatest$StudyID)
+)
+dfDistributions
+#> # A tibble: 0 × 3
+#> # ℹ 3 variables: MetricID <chr>, SnapshotDate <date>, StudyID <chr>
+```
+
 ## Running the reporting workflows
 
 The same steps run automatically through the YAML workflows in
@@ -7005,6 +7054,9 @@ reporting <- workr::RunWorkflows(
 ``` r
 
 purrr::map(reporting, dim)
+#> $Reporting_Distributions
+#> [1] 0 3
+#> 
 #> $Reporting_Groups
 #> [1] 1661    4
 #> 
