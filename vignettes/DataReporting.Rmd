@@ -23,7 +23,7 @@ library(dplyr)
 
 ## Introduction
 
-The `{gsm}` suite of packages monitors clinical trials with Key Risk Indicators (KRIs). `{gsm.reporting}` sits between analysis and reporting: it takes the output of metric workflows and produces the four tables of the reporting data model.
+The `{gsm}` suite of packages monitors clinical trials with Key Risk Indicators (KRIs). `{gsm.reporting}` sits between analysis and reporting: it takes the output of metric workflows and produces the tables of the reporting data model.
 
 ![](data_model_detailed.png){width="100%"}
 
@@ -33,6 +33,7 @@ The `{gsm}` suite of packages monitors clinical trials with Key Risk Indicators 
 | `Reporting_Metrics` | `MakeMetric()` | One row of metadata per metric |
 | `Reporting_Results` | `BindResults()`, `CalculateChange()`, `FilterByLatestSnapshotDate()` | Stacked results for every metric and group |
 | `Reporting_Bounds` | `MakeBounds()` | Predicted bounds used to draw flag thresholds in charts |
+| `Reporting_Distributions` | `BindResults()` | Stacked category breakdowns of each metric's numerator and denominator, for metrics that define them |
 
 Each table has a YAML workflow in `inst/workflow/3_reporting`. This vignette builds each table step by step and then runs the workflows. The inputs are sample data from `{gsm.core}` and mapped data from `{gsm.mapping}`.
 
@@ -145,6 +146,40 @@ dfResultsChanges |>
 ```{r bounds}
 dfBounds <- MakeBounds(dfResults = dfResults, dfMetrics = dfMetrics)
 dfBounds
+```
+
+### Distributions
+
+A metric can break its numerator and denominator down by category, such as adverse events by seriousness or participants by IP status. To do so, its workflow adds an `Analysis_Distributions` step using `gsm.core::Input_Rate_Dist()` and includes `Analysis_Distributions` in its output:
+
+```yaml
+- output: Analysis_Distributions
+  name: gsm.core::Input_Rate_Dist
+  params:
+    dfSubjects: Mapped_SUBJ
+    dfNumerator: Mapped_AE
+    dfDenominator: Mapped_SUBJ
+    strSubjectCol: subjid
+    strGroupCol: invid
+    strGroupLevel: GroupLevel
+    strNumeratorMethod: Count
+    strDenominatorMethod: Count
+    strNumeratorCatCols: aeser
+    strDenominatorCatCols: drv_ip_nonstarter_status
+```
+
+`Reporting_Distributions` stacks these with `BindResults()`, as for `Reporting_Results`. Each row is one category of one variable for one group, with the columns `GroupID`, `GroupLevel`, `Source` (`Numerator` or `Denominator`), `Variable`, `Category`, `Count`, `Participants`, `Total`, and `Percent`, plus `MetricID`, `SnapshotDate`, and `StudyID`.
+
+Metrics without `Analysis_Distributions` are skipped. None of the sample metrics here define distributions, so the result is an empty data frame:
+
+```{r distributions}
+dfDistributions <- BindResults(
+  lAnalysis = lAnalyzed,
+  strName = "Analysis_Distributions",
+  dSnapshotDate = max(dfLatest$SnapshotDate),
+  strStudyID = unique(dfLatest$StudyID)
+)
+dfDistributions
 ```
 
 ## Running the reporting workflows
