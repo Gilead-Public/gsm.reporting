@@ -22,7 +22,7 @@ Imports:
     cli,
     dplyr,
     glue,
-    gsm.core (>= 1.3.2),
+    gsm.core (>= 1.4.0),
     purrr,
     rlang,
     tibble,
