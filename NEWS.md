@@ -1,6 +1,27 @@
-# gsm.reporting (development version)
+# gsm.reporting v1.1.9
 
-- `gsm.kri` is no longer a suggested dependency, which removes the circular dependency between `gsm.reporting` and `gsm.kri`.
+This patch release removes the circular dependency on `gsm.kri`, makes
+`CalculateChange()` return a consistent set of columns when historical data is
+unavailable, and adds a `Reporting_Distributions` table for metric category
+distributions.
+
+**Changes:**
+- New `Distributions` reporting workflow (`inst/workflow/3_reporting/Distributions.yaml`)
+  stacks each metric's `Analysis_Distributions` (from `gsm.core::Input_Rate_Dist()`)
+  into `Reporting_Distributions`. Metrics without distributions are skipped, and if
+  none define them the table is empty, so existing workflow sets run unchanged.
+  Covered by qualification test T21_2 (#87).
+- `BindResults()` skips metrics that don't contain the requested output (logging
+  which ones at info level) instead of erroring, and returns a zero-row data frame
+  with the metadata columns when no metric contains it (#86).
+- `FilterByLatestSnapshotDate()` is now provided by `gsm.reporting`, and
+  `gsm.kri` is no longer a suggested dependency. The `DataReporting` vignette
+  and qualification tests no longer rely on `gsm.kri`.
+- `CalculateChange()` preserves current values and returns previous-snapshot
+  and change columns filled with `NA` when no previous snapshot is available
+  (#88).
+- The qualification test helper renames its local source variable to avoid
+  colliding with `gsm.core`'s read-only binding (#91).
 
 # gsm.reporting v1.1.8
 
