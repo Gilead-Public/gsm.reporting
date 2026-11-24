@@ -1,6 +1,6 @@
 Package: gsm.reporting
 Title: Good Statistical Monitoring Reporting
-Version: 1.1.8
+Version: 1.1.9
 Authors@R: c(
     person("Jeremy", "Wildfire", , "jwildfire@gmail.com", role = c("aut", "cre")),
     person("Laura", "Maxwell", , "lkmaxwell23@gmail.com", role = "aut"),
@@ -22,14 +22,14 @@ Imports:
     cli,
     dplyr,
     glue,
-    gsm.core (>= 1.3.2),
+    gsm.core (>= 1.4.0),
     purrr,
+    rlang,
     tibble,
     tidyr,
     yaml
 Suggests:
     DT,
-    gsm.kri (>= 1.2.0),
     gsm.mapping (>= 1.2.0),
     gt,
     knitr,
@@ -41,7 +41,6 @@ VignetteBuilder:
     knitr
 Remotes:
     gsm.core=Gilead-Public/gsm.core@main,
-    gsm.kri=Gilead-Public/gsm.kri@main,
     gsm.mapping=Gilead-Public/gsm.mapping@main,
     workr=Gilead-Public/workr@main
 Config/testthat/edition: 3

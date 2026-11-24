@@ -6,29 +6,29 @@ library(gsm.mapping)
 set.seed(123)
 
 ## Declare all the data
-lSource <- gsm.core::lSource
+lQualSource <- gsm.core::lSource
 
 # Step 0 - Data Ingestion - standardize tables/columns names
 lData <- list(
-  Raw_SUBJ = lSource$Raw_SUBJ,
-  Raw_AE = lSource$Raw_AE,
-  Raw_PD = lSource$Raw_PD %>%
+  Raw_SUBJ = lQualSource$Raw_SUBJ,
+  Raw_AE = lQualSource$Raw_AE,
+  Raw_PD = lQualSource$Raw_PD %>%
     rename(subjid = subjectenrollmentnumber) %>%
     rename(dvdecod = crocategory) %>%
     rename(dvterm = description) %>%
     rename(dvdtm = deviationdate),
-  Raw_LB = lSource$Raw_LB,
-  Raw_STUDCOMP = lSource$Raw_STUDCOMP,
-  Raw_SDRGCOMP = lSource$Raw_SDRGCOMP %>%
+  Raw_LB = lQualSource$Raw_LB,
+  Raw_STUDCOMP = lQualSource$Raw_STUDCOMP,
+  Raw_SDRGCOMP = lQualSource$Raw_SDRGCOMP %>%
     mutate(phase = as.character(phase)),
-  Raw_DATACHG = lSource$Raw_DATACHG %>%
+  Raw_DATACHG = lQualSource$Raw_DATACHG %>%
     rename(subject_nsv = subjectname),
-  Raw_DATAENT = lSource$Raw_DATAENT %>%
+  Raw_DATAENT = lQualSource$Raw_DATAENT %>%
     rename(subject_nsv = subjectname),
-  Raw_QUERY = lSource$Raw_QUERY %>%
+  Raw_QUERY = lQualSource$Raw_QUERY %>%
     rename(subject_nsv = subjectname),
-  Raw_ENROLL = lSource$Raw_ENROLL,
-  Raw_SITE = lSource$Raw_SITE %>%
+  Raw_ENROLL = lQualSource$Raw_ENROLL,
+  Raw_SITE = lQualSource$Raw_SITE %>%
     rename(studyid = protocol) %>%
     rename(invid = pi_number) %>%
     rename(InvestigatorFirstName = pi_first_name) %>%
@@ -36,18 +36,18 @@ lData <- list(
     rename(City = city) %>%
     rename(State = state) %>%
     rename(Country = country),
-  Raw_STUDY = lSource$Raw_STUDY %>%
+  Raw_STUDY = lQualSource$Raw_STUDY %>%
     rename(studyid = protocol_number),
-  Raw_PK = lSource$Raw_PK %>%
+  Raw_PK = lQualSource$Raw_PK %>%
     rename(visit = foldername),
-  Raw_IE = lSource$Raw_IE,
-  Raw_VISIT = lSource$Raw_VISIT %>%
+  Raw_IE = lQualSource$Raw_IE,
+  Raw_VISIT = lQualSource$Raw_VISIT %>%
     rename(visit = foldername),
-  Raw_OverallResponse = lSource$Raw_OverallResponse %>%
+  Raw_OverallResponse = lQualSource$Raw_OverallResponse %>%
     rename(response_folder = foldername),
-  Raw_Death = lSource$Raw_Death,
-  Raw_Randomization = lSource$Raw_Randomization,
-  Raw_VS = lSource$Raw_VS %>%
+  Raw_Death = lQualSource$Raw_Death,
+  Raw_Randomization = lQualSource$Raw_Randomization,
+  Raw_VS = lQualSource$Raw_VS %>%
     rename(studyid = project) %>%
     rename(visit = foldername) %>%
     rename(bsa = bsaentry)
@@ -80,9 +80,7 @@ delayedAssign(
 delayedAssign(
   "kri_workflows",
   workr::MakeWorkflowList(
-    strNames = c("kri", "srs"),
-    strPath = "workflow/2_metrics",
-    strPackage = "gsm.kri"
+    strPath = test_path("fixtures", "workflow", "2_metrics")
   )
 )
 

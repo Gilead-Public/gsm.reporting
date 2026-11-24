@@ -1,0 +1,30 @@
+meta:
+  Type: Reporting
+  ID: Distributions
+  Description: Reporting Distributions Data
+  Priority: 1
+  Active: true
+spec:
+  Mapped_STUDY:
+    GroupID:
+      type: character
+steps:
+  # Capture study ID from the GroupID column in the study metadata.
+  - output: GroupID
+    name: dplyr::pull
+    params:
+      .data: Mapped_STUDY
+      var: GroupID
+  - output: strStudyID
+    name: unique
+    params:
+      x: GroupID
+  # Stack Analysis_Distributions from every metric that defines it. Metrics
+  # without Analysis_Distributions are skipped.
+  - output: Reporting_Distributions
+    name: gsm.reporting::BindResults
+    params:
+      lAnalysis: lAnalyzed
+      strName: "Analysis_Distributions"
+      strStudyID: strStudyID
+      dSnapshotDate: dSnapshotDate
