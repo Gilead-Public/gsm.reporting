@@ -10,10 +10,11 @@ distributions.
 
 **Changes:** - New `Distributions` reporting workflow
 (`inst/workflow/3_reporting/Distributions.yaml`) stacks each metric’s
-`Analysis_Distributions` (from `gsm.core::Input_Rate_Dist()`) into
-`Reporting_Distributions`. Metrics without distributions are skipped,
-and if none define them the table is empty, so existing workflow sets
-run unchanged. Covered by qualification test T21_2
+`Analysis_Distributions` (from
+[`gsm.core::Input_Rate_Dist()`](https://gilead-public.github.io/gsm.core/reference/Input_Rate_Dist.html))
+into `Reporting_Distributions`. Metrics without distributions are
+skipped, and if none define them the table is empty, so existing
+workflow sets run unchanged. Covered by qualification test T21_2
 ([\#87](https://github.com/Gilead-Public/gsm.reporting/issues/87)). -
 [`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md)
 skips metrics that don’t contain the requested output (logging which
