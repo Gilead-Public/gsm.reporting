@@ -2,12 +2,24 @@
 
 ## gsm.reporting v1.1.9
 
-This patch release removes the circular dependency on `gsm.kri` and
-makes
+This patch release removes the circular dependency on `gsm.kri`, makes
 [`CalculateChange()`](https://gilead-public.github.io/gsm.reporting/dev/reference/CalculateChange.md)
-return a consistent set of columns when historical data is unavailable.
+return a consistent set of columns when historical data is unavailable,
+and adds a `Reporting_Distributions` table for metric category
+distributions.
 
-**Changes:** -
+**Changes:** - New `Distributions` reporting workflow
+(`inst/workflow/3_reporting/Distributions.yaml`) stacks each metric’s
+`Analysis_Distributions` (from `gsm.core::Input_Rate_Dist()`) into
+`Reporting_Distributions`. Metrics without distributions are skipped,
+and if none define them the table is empty, so existing workflow sets
+run unchanged. Covered by qualification test T21_2
+([\#87](https://github.com/Gilead-Public/gsm.reporting/issues/87)). -
+[`BindResults()`](https://gilead-public.github.io/gsm.reporting/dev/reference/BindResults.md)
+skips metrics that don’t contain the requested output (logging which
+ones at info level) instead of erroring, and returns a zero-row data
+frame with the metadata columns when no metric contains it
+([\#86](https://github.com/Gilead-Public/gsm.reporting/issues/86)). -
 [`FilterByLatestSnapshotDate()`](https://gilead-public.github.io/gsm.reporting/dev/reference/FilterByLatestSnapshotDate.md)
 is now provided by `gsm.reporting`, and `gsm.kri` is no longer a
 suggested dependency. The `DataReporting` vignette and qualification
